@@ -34,7 +34,15 @@ import env_loader  # Ensures repo root in sys.path and .env loaded
 
 from src.api.courses import build_courses_router
 from src.api.learning import DEMO_COURSE, LearningStore
-from src.api.materials import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, extract_units, stage_upload
+from src.api.materials import (
+    AUDIO_EXTENSIONS,
+    PRESENTATION_TOPIC,
+    SUPPORTED_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    extract_units,
+    presentation_concepts,
+    stage_upload,
+)
 from src.graph.graph import tag_units
 from src.learner_model.adaptive import build_diagnostic, build_quiz
 from src.learner_model.bkt import LearnerModel
@@ -328,13 +336,22 @@ def get_graph():
     """Returns the full prerequisite knowledge graph (DAG topology) for visualizer."""
     nodes = []
     edges = []
-
-    for c in CONCEPTS:
+    bundle = rt.bundle
+    presentation_nodes = [
+        c for c in bundle.graph.concepts.values() if c.topic == PRESENTATION_TOPIC.topic_id
+    ]
+    concepts = [*CONCEPTS, *presentation_nodes]
+    topics = set()
+    for c in concepts:
+        is_presentation = c.topic == PRESENTATION_TOPIC.topic_id
+        topic = PRESENTATION_TOPIC.name if is_presentation else c.topic
+        topics.add(topic)
         meta = CONCEPT_DESCRIPTIONS.get(c.concept_id, {})
+        description = "Slide heading in the uploaded presentation." if is_presentation else f"Concept under {topic}."
         # Collect rich evidence details from runtime store
         evidence_details = []
         for ev_id in c.evidence_units:
-            u = rt.bundle.store.get(ev_id)
+            u = bundle.store.get(ev_id)
             if u:
                 evidence_details.append({
                     "unit_id": u.unit_id,
@@ -346,12 +363,13 @@ def get_graph():
         nodes.append({
             "id": c.concept_id,
             "name": c.name,
-            "topic": c.topic,
+            "topic": topic,
+            "assessment_available": not is_presentation,
             "prerequisites": c.prerequisites,
             "evidence_count": len(evidence_details),
             "evidence_units": [item["unit_id"] for item in evidence_details],
             "evidence_details": evidence_details,
-            "description": meta.get("description", f"Concept under {c.topic}."),
+            "description": meta.get("description", description),
             "keyTakeaways": meta.get("keyTakeaways", []),
         })
         for prereq in c.prerequisites:
@@ -366,8 +384,8 @@ def get_graph():
     from src.graph.graph import KnowledgeGraph as PodBKG
     from src.retrieval.schemas import ConceptNode as BConceptNode, Topic as BTopic
     kg = PodBKG(
-        [BTopic(topic_id=f"t-{idx}", name=t) for idx, t in enumerate({c.topic for c in CONCEPTS})],
-        [BConceptNode(concept_id=c.concept_id, name=c.name, topic=c.topic, prerequisites=c.prerequisites, evidence_units=c.evidence_units) for c in CONCEPTS]
+        [BTopic(topic_id=f"t-{idx}", name=t) for idx, t in enumerate(sorted(topics))],
+        [BConceptNode(concept_id=c.concept_id, name=c.name, topic=c.topic, prerequisites=c.prerequisites, evidence_units=c.evidence_units) for c in concepts]
     )
     try:
         topo = kg.topological_order()
@@ -375,7 +393,7 @@ def get_graph():
     except Exception as err:
         integrity = {"is_dag": False, "error": str(err)}
 
-    unique_topics = sorted({c.topic for c in CONCEPTS})
+    unique_topics = sorted(topics)
     return {
         "nodes": nodes,
         "edges": edges,
@@ -448,8 +466,13 @@ def upload_material(
             if not units:
                 raise HTTPException(422, f"No usable course content found in {title}.")
             all_units.extend(units)
-            concepts.append(_upload_concept(path, title, units))
-        result = rt.ingest(all_units, concepts=concepts)
+            if path.suffix != ".pptx":
+                concepts.append(_upload_concept(path, title, units))
+        ppt_concepts = presentation_concepts(all_units)
+        result = rt.ingest(
+            all_units, concepts=concepts + ppt_concepts,
+            topics=(PRESENTATION_TOPIC,) if ppt_concepts else (),
+        )
     except Exception as exc:
         for path in staged:
             path.unlink(missing_ok=True)
@@ -468,6 +491,7 @@ def upload_material(
         "original_filenames": original_names,
         "filename": filenames[0],
         "units_created": len(all_units),
+        "presentation_concepts_created": len(ppt_concepts),
         "sample_units": [
             {
                 "unit_id": unit.unit_id,
@@ -720,12 +744,16 @@ def get_grounding_metrics():
 # --------------------------------------------------------------------------- #
 def _init_existing_uploads():
     for path in UPLOAD_DIR.iterdir():
-        if not path.is_file() or rt.bundle.store.by_source(path.name):
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_EXTENSIONS or rt.bundle.store.by_source(path.name):
             continue
         try:
             units = extract_units(path, path.name)
             if units:
-                rt.ingest(units, concepts=[_upload_concept(path, path.name, units)])
+                if path.suffix.lower() == ".pptx":
+                    concepts = presentation_concepts(units)
+                    rt.ingest(units, concepts=concepts, topics=(PRESENTATION_TOPIC,) if concepts else ())
+                else:
+                    rt.ingest(units, concepts=[_upload_concept(path, path.name, units)])
         except Exception:
             log.warning("Could not restore uploaded material %s", path.name, exc_info=True)
 

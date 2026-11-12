@@ -58,7 +58,7 @@ export default function QuizPage() {
         ]);
 
         if (graphRes.nodes && graphRes.nodes.length > 0) {
-          const liveNodes: ConceptNode[] = graphRes.nodes.map((n) => {
+          const liveNodes: ConceptNode[] = graphRes.nodes.filter((n) => n.assessment_available !== false).map((n) => {
             const matched = masteryRes.board?.find((b) => b.concept_id === n.id);
             const m = matched ? matched.mastery : 0.5;
             const mappedStatus: "mastered" | "learning" | "weak" | "unvisited" =

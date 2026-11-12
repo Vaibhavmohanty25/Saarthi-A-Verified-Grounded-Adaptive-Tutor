@@ -1,10 +1,12 @@
 import importlib
 import re
 import sys
+from io import BytesIO
 
 import fitz
 import pytest
 from fastapi.testclient import TestClient
+from pptx import Presentation
 
 from src.graph.graph_builder import SYSTEM_A
 from src.ingestion.processing.chunker import chunk_text
@@ -50,6 +52,42 @@ def _pdf(text):
     with fitz.open() as doc:
         doc.new_page().insert_text((60, 60), text)
         return doc.tobytes()
+
+
+def test_powerpoint_upload_populates_the_graph_with_cited_headings(service, monkeypatch):
+    for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "REPLICATE_API_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    presentation = Presentation()
+    for title, body in [
+        ("Agenda", "What we will cover"),
+        ("Critical Section", "Only one process may execute this section at a time."),
+        ("Semaphores", "A semaphore controls access to shared resources."),
+        ("Critical Section", "Mutual exclusion protects the shared state."),
+    ]:
+        slide = presentation.slides.add_slide(presentation.slide_layouts[1])
+        slide.shapes.title.text = title
+        slide.placeholders[1].text = body
+    deck = BytesIO()
+    presentation.save(deck)
+
+    client = TestClient(service.app)
+    headers = {"X-Admin-Token": "test-admin"}
+    legacy = client.post("/ingest/upload", files={"file": ("legacy.ppt", b"legacy")}, headers=headers)
+    assert legacy.status_code == 415
+    assert "PowerPoint Presentation (.pptx)" in legacy.json()["detail"]
+
+    response = client.post("/ingest/upload", files={"file": ("Operating Systems.pptx", deck.getvalue())}, headers=headers)
+    assert response.status_code == 200, response.text
+    assert response.json()["presentation_concepts_created"] == 2
+
+    restarted = TestClient(importlib.reload(service).app)
+    graph = restarted.get("/graph").json()
+    nodes = {node["name"]: node for node in graph["nodes"] if node["topic"] == "Uploaded presentations"}
+    assert set(nodes) == {"Critical Section", "Semaphores"}
+    assert {item["location"]["slide"] for item in nodes["Critical Section"]["evidence_details"]} == {2, 4}
+    assert not nodes["Semaphores"]["prerequisites"]
+    assert not nodes["Semaphores"]["assessment_available"]
+    assert nodes["Semaphores"]["id"] in graph["integrity"]["topological_order"]
 
 
 def _verified_fixture_question(bundle, settings):

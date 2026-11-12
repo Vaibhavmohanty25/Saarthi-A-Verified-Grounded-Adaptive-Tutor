@@ -75,6 +75,7 @@ class ContentUnit(BaseModel):
     source_type: SourceType
     location: Location
     text: str = Field(..., min_length=1)
+    slide_title: Optional[str] = None
     image_caption: Optional[str] = None
     embedding: Optional[list[float]] = None  # filled by Pod A
     topic_ids: list[str] = Field(default_factory=list)  # back-filled by Pod B (concept's topic + ancestors)

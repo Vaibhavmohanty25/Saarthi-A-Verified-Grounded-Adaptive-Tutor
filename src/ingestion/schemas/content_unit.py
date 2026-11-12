@@ -16,6 +16,7 @@ class ContentUnit(BaseModel):
     content_type: str = "text"
 
     text: str
+    slide_title: Optional[str] = None
 
     visual_description: Optional[str] = None
     image_path: Optional[str] = None

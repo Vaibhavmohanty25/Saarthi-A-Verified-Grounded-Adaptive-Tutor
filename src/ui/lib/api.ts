@@ -79,6 +79,7 @@ export interface GraphNode {
   topic: string;
   prerequisites: string[];
   evidence_count: number;
+  assessment_available?: boolean;
   evidence_units: string[];
   evidence_details?: Omit<ContentUnit, "source_type">[];
   description: string;
@@ -195,7 +196,7 @@ export async function fetchUploadedMaterials() {
 export function uploadCourseFiles(files: File[]) {
   const body = new FormData();
   for (const file of files) body.append("files", file);
-  return request<{ units_created: number; sample_units: ContentUnit[]; filenames?: string[] }>(
+  return request<{ units_created: number; sample_units: ContentUnit[]; presentation_concepts_created?: number }>(
     "/ingest/upload", { method: "POST", body },
   );
 }

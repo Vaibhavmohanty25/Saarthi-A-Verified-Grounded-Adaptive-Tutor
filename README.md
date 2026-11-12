@@ -153,6 +153,12 @@ npm run build
 
 ## Tutoring from an uploaded course
 
+To add PowerPoint concepts to the shared graph in the web UI, save the deck as a `.pptx` and
+upload it from the Graph page. Saarthi indexes slide text and shows descriptive slide headings
+under **Uploaded presentations**, with slide numbers and source excerpts. This mode works with
+local retrieval and does not infer prerequisites or generate questions. Legacy `.ppt` files
+must be converted with PowerPoint's **Save As → PowerPoint Presentation (.pptx)**.
+
 Create a private course with a single PDF, PPTX, image, lecture recording, or text file.
 The API stages the file and returns a `course_id` and an `access_token` while FastAPI processes it in the background.
 Keep the token and use it as `Authorization: Bearer <access_token>` for every course request.

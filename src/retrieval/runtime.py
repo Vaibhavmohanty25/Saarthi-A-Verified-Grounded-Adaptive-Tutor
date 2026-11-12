@@ -22,7 +22,7 @@ from src.graph.graph import KnowledgeGraph, tag_units
 from src.graph.graph_builder import GraphBuilder
 from .llm import make_llm
 from .retriever import HybridRetriever, build_retriever
-from .schemas import ConceptNode, ContentUnit
+from .schemas import ConceptNode, ContentUnit, Topic
 from .store import DEFAULT_CORPUS, DEFAULT_GRAPH, CorpusStore, startup_corpus_path
 
 log = logging.getLogger("pod_b")
@@ -111,7 +111,8 @@ class Runtime:
             graph.save(cache / "graph.json")
 
     def ingest(self, units: list[ContentUnit], replace_sources: bool = True,
-               concepts: tuple[ConceptNode, ...] | list[ConceptNode] = ()) -> dict:
+               concepts: tuple[ConceptNode, ...] | list[ConceptNode] = (),
+               topics: tuple[Topic, ...] = ()) -> dict:
         if not units:
             raise ValueError("no units supplied")
         if len(units) > MAX_UNITS_PER_INGEST:
@@ -131,6 +132,7 @@ class Runtime:
                      for u in units]
             store = CorpusStore(keep + fresh)  # raises on duplicate ids inside the request
             graph = KnowledgeGraph.from_dict(old.graph.to_dict())
+            graph.topics.update((topic.topic_id, topic) for topic in topics)
             graph.concepts.update((concept.concept_id, concept) for concept in concepts)
             pruned = prune_graph(graph, store)
             tag = tag_units(graph, store)

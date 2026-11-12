@@ -2,6 +2,7 @@
 
 import logging
 import os
+from hashlib import sha256
 from pathlib import Path, PureWindowsPath
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ from fastapi import HTTPException, UploadFile
 
 from src.ingestion.processing.chunker import chunk_text
 from src.ingestion.schemas.content_unit import ContentUnit as IngestedUnit
-from src.retrieval.schemas import ContentUnit, Location
+from src.retrieval.schemas import ConceptNode, ContentUnit, Location, Topic
 
 log = logging.getLogger(__name__)
 
@@ -19,11 +20,15 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 SUPPORTED_EXTENSIONS = (
     VIDEO_EXTENSIONS | AUDIO_EXTENSIONS | IMAGE_EXTENSIONS | {".pdf", ".pptx", ".txt", ".md"}
 )
+PRESENTATION_TOPIC = Topic(topic_id="t-uploaded-presentations", name="Uploaded presentations")
+NON_CONCEPT_TITLES = {"agenda", "contents", "introduction", "overview", "questions", "summary", "thank you", "title"}
 
 
 def stage_upload(upload: UploadFile, directory: Path) -> tuple[Path, str]:
     original = PureWindowsPath(upload.filename or "").name
     suffix = Path(original).suffix.lower()
+    if suffix == ".ppt":
+        raise HTTPException(415, "Save the legacy .ppt file as a PowerPoint Presentation (.pptx), then upload the new file.")
     if suffix not in SUPPORTED_EXTENSIONS:
         raise HTTPException(415, "Unsupported course material format.")
 
@@ -101,8 +106,29 @@ def to_retrieval_unit(unit: IngestedUnit, title: str) -> ContentUnit:
         source_type=location.kind,
         location=location,
         text=f"{location.label()} ({Path(title).stem}): {body}",
+        slide_title=unit.slide_title,
         image_caption=unit.visual_description,
     )
+
+
+def presentation_concepts(units: list[ContentUnit]) -> list[ConceptNode]:
+    """Use slide headings as evidence-backed concepts in the shared demo graph."""
+    concepts: dict[tuple[str, str], ConceptNode] = {}
+    for unit in units:
+        if unit.source_type != "slides" or not unit.slide_title:
+            continue
+        title = " ".join(unit.slide_title.split())
+        normalized = title.casefold().strip(" .:!?")
+        if not normalized or normalized in NON_CONCEPT_TITLES or len(title) > 120:
+            continue
+        key = (unit.source_id, normalized)
+        if key not in concepts:
+            digest = sha256(f"{unit.source_id}\0{normalized}".encode()).hexdigest()[:16]
+            concepts[key] = ConceptNode(
+                concept_id=f"ppt-{digest}", name=title, topic=PRESENTATION_TOPIC.topic_id,
+            )
+        concepts[key].evidence_units.append(unit.unit_id)
+    return list(concepts.values())
 
 
 def _optional_visual_units(extract):

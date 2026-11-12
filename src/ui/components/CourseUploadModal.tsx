@@ -205,9 +205,12 @@ export function CourseUploadModal({
       clearTimeout(timer1);
       clearTimeout(timer2);
       setProgress(100);
-      setPipelineStage(
-        `Ingestion Complete: ${res.units_created || stagedFiles.length} units indexed!`
-      );
+      const concepts = res.presentation_concepts_created;
+      const hasPresentation = stagedFiles.some((file) => getFileCategory(file) === "pptx");
+      const conceptStatus = hasPresentation && concepts !== undefined
+        ? ` ${concepts} slide headings added to the graph.`
+        : "";
+      setPipelineStage(`${res.units_created} units indexed.${conceptStatus}`);
 
       setTimeout(() => {
         onUploadSuccess(res.sample_units);
