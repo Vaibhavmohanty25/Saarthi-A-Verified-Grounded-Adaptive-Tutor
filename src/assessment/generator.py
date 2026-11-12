@@ -85,8 +85,8 @@ def source_location(concept, units):
     return {}
 
 
-def build_prompt(concept, source_text):
-    return (
+def build_prompt(concept, source_text, *, mcq_only=False):
+    prompt = (
         "You are writing ONE exam question for a student.\n"
         "Use ONLY the source text below. Do not use any outside knowledge.\n\n"
         f"Concept: {concept.name}\n\n"
@@ -100,6 +100,9 @@ def build_prompt(concept, source_text):
         '  "answer": the correct answer as a string\n'
         '  "difficulty": an integer from 1 to 5\n'
     )
+    if mcq_only:
+        prompt += 'Use only the "mcq" type with four distinct choices. Use the exact correct option as the answer.\n'
+    return prompt
 
 
 def parse_question_json(raw, concept, location):
@@ -133,9 +136,9 @@ def parse_question_json(raw, concept, location):
     )
 
 
-def generate_question(concept, source_text, location, client=None, model=None):
+def generate_question(concept, source_text, location, client=None, model=None, *, mcq_only=False):
     """Return (Question, source_used). client=None means dry-run."""
-    prompt = build_prompt(concept, source_text)
+    prompt = build_prompt(concept, source_text, mcq_only=mcq_only)
     if client is None:
         raw, used = DRY_RUN_RESPONSE, "dry-run (no API key)"
     else:

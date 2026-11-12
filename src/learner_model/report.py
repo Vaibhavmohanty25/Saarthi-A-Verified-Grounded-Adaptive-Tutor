@@ -41,6 +41,8 @@ COMMON_MISCONCEPTIONS = {
 def format_location(loc):
     if not loc:
         return "(no source)"
+    if hasattr(loc, "model_dump"):
+        loc = loc.model_dump(exclude_none=True)
     if "timestamp" in loc:
         return f"Lecture {loc.get('lecture', '?')} @ {loc['timestamp']}"
     if "slide" in loc:

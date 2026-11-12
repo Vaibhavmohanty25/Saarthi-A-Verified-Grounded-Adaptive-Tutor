@@ -53,6 +53,8 @@ class Question(BaseModel):
     Verified assessment item (produced by Pod C).
     """
     q_id: str = Field(..., description="Unique question identifier")
+    concept_id: Optional[str] = Field(None, description="Concept identifier for uploaded courses")
+    source_unit_id: Optional[str] = Field(None, description="Exact evidence unit for uploaded courses")
     topic: str = Field(..., description="Topic or concept identifier")
     source_location: SourceLocation = Field(..., description="Exact origin in course material")
     difficulty: int = Field(..., ge=1, le=5, description="Difficulty level rated 1 to 5")

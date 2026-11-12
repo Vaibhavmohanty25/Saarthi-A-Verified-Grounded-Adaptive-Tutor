@@ -1,23 +1,11 @@
 from pathlib import Path
 
-from groq import RateLimitError
-
-from src.ingestion.ingestion.audio_extractor import extract_audio
-from src.ingestion.ingestion.video_transcriber import transcribe_audio
 from src.ingestion.ingestion.keyframe_extractor import extract_keyframes
 
 from src.ingestion.vision.image_captioner import describe_educational_image
 
 from src.ingestion.schemas.content_unit import ContentUnit
 
-from src.ingestion.processing.semantic_processor import enrich_content_units
-from src.ingestion.processing.embedding_processor import embed_content_units
-
-from src.ingestion.knowledge.course_registry import course_concept_registry
-
-from src.ingestion.llm.text_llm import (
-    LLMUnavailableError
-)
 
 
 def create_video_visual_units(
@@ -236,6 +224,14 @@ def create_video_visual_units(
 def process_video(
     file_path: str
 ) -> dict:
+    from groq import RateLimitError
+
+    from src.ingestion.ingestion.audio_extractor import extract_audio
+    from src.ingestion.ingestion.video_transcriber import transcribe_audio
+    from src.ingestion.knowledge.course_registry import course_concept_registry
+    from src.ingestion.llm.text_llm import LLMUnavailableError
+    from src.ingestion.processing.embedding_processor import embed_content_units
+    from src.ingestion.processing.semantic_processor import enrich_content_units
 
     video_path = Path(
         file_path

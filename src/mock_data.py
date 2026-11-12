@@ -62,6 +62,8 @@ def _question(
 
 def get_question_concept_id(question):
     """Resolve the concept carried by a canonical Question record."""
+    if concept_id := getattr(question, "concept_id", None):
+        return concept_id
     qid = getattr(question, "q_id", str(question))
     if qid.startswith("gen_"):
         return qid.removeprefix("gen_")

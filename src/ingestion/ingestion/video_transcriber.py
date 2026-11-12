@@ -10,19 +10,14 @@ from src.ingestion.processing.transcript_chunker import merge_transcript_segment
 
 load_dotenv()
 
-API_KEY = os.getenv("GROQ_API_KEY")
-
-if not API_KEY:
-    raise ValueError("GROQ_API_KEY was not found.")
-
-
-client = Groq(api_key=API_KEY)
-
-
 def transcribe_audio(
     audio_path: str,
     original_video_name: str
 ) -> list[ContentUnit]:
+    api_key = os.getenv("GROQ_API_KEY")
+    if not api_key:
+        raise ValueError("GROQ_API_KEY was not found.")
+    client = Groq(api_key=api_key, timeout=120, max_retries=1)
 
     source_name = original_video_name
     source_stem = Path(source_name).stem

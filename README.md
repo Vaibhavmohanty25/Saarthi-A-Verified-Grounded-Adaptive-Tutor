@@ -12,7 +12,7 @@ Traditional educational chatbots frequently suffer from hallucinations, lack ped
 **Saarthi solves this through a 4-pod verified architecture:**
 1. **Multimodal Grounding**: Ingests lecture slides (PPTX), textbooks (PDF), and video lectures, indexing each concept with verifiable slide numbers and timestamps.
 2. **Prerequisite Knowledge Graph**: Mimes dependencies between topics into a NetworkX Directed Acyclic Graph (DAG) to enforce pedagogical ordering.
-3. **Dual-LLM & SymPy Verification**: Questions are drafted by Model #1, independently verified by Model #2, and mathematically checked via Python SymPy to guarantee zero hallucinated assessment items.
+3. **Independent Question Verification**: Uploaded-course MCQs are drafted by Groq and checked independently by Gemini against a specific source excerpt.
 4. **Bayesian Knowledge Tracing (BKT)**: Dynamically maintains each student's mastery probability $P(L_t)$, adjusting question difficulty and initiating **pedagogical backward-walks** to remediate root misconceptions.
 
 ---
@@ -70,7 +70,7 @@ Saarthi/
 ### 4. Monte Carlo Ablation Bench (`/benchmark`)
 - **Empirical Personalization Benchmark**: Simulates 30 synthetic learners over 5 consecutive sessions comparing **Adaptive BKT** (prerequisite-first) vs. a **Random Question Baseline**.
 - **Demonstrated Mastery Gain**: +5.6% to +27% higher mastery acceleration ($p < 0.001$).
-- **Live RAGAS Metrics**: Measures Faithfulness (94.8%), Answer Relevancy (92.3%), Context Precision (90.1%), Context Recall (89.2%), and Refusal Accuracy (98.5%).
+- **Recorded grounding evaluation** reports retrieval hits, citation precision, and refusal rates on the labeled development corpus. Run `python scripts/eval_grounding.py` and read the results at `GET /eval/grounding`.
 - **Interactive Re-run**: Recalculates Monte Carlo simulations live on demand.
 
 ---
@@ -144,10 +144,40 @@ npm run build
 | `POST` | `/quiz` | Custom or adaptive quiz generation (size, difficulty, concept) |
 | `POST` | `/answer` | Grades answer, updates BKT mastery, and provides explanation |
 | `GET` | `/mastery/{student_id}` | Student mastery board across all course concepts |
-| `POST` | `/diagnostic` | Runs diagnostic assessment and calibrates priors |
+| `POST` | `/diagnostic` | Issues diagnostic questions. Submit their attempt IDs to `/answer` to update mastery from observed answers |
 | `GET` | `/report/{student_id}` | Generates misconception report and backward-walk recommendation |
-| `GET` | `/eval/ablation` | Monte Carlo simulated learning curves and RAGAS metrics |
+| `GET` | `/eval/ablation` | Monte Carlo simulated learning curves |
+| `GET` | `/eval/grounding` | Recorded development-set retrieval, citation, and refusal metrics |
 | `POST` | `/ingest/upload` | Multimodal ingestion endpoint for PPTX, PDF, and video |
+
+## Tutoring from an uploaded course
+
+Create a private course with a single PDF, PPTX, image, lecture recording, or text file.
+The API stages the file and returns a `course_id` and an `access_token` while FastAPI processes it in the background.
+Keep the token and use it as `Authorization: Bearer <access_token>` for every course request.
+The token grants access to one private course and its learner state.
+
+```bash
+curl -F 'file=@lecture.pdf' http://127.0.0.1:8000/courses
+```
+
+| Method | Path | Use |
+| --- | --- | --- |
+| GET | `/courses/{course_id}` | Check build and assessment status |
+| POST | `/courses/{course_id}/retry` | Resume a queued or failed build, or retry assessment generation |
+| POST | `/courses/{course_id}/chat` | Ask a question grounded in the uploaded course |
+| GET | `/courses/{course_id}/graph` | Read concepts, prerequisites, and evidence IDs |
+| POST | `/courses/{course_id}/quiz` | Issue verified practice questions using the learner's mastery |
+| POST | `/courses/{course_id}/diagnostic` | Issue a diagnostic across course topics |
+| POST | `/courses/{course_id}/answer` | Submit `q_id`, `attempt_id`, and `answer`. An identical retry returns the original grade |
+| GET | `/courses/{course_id}/mastery` | Read persisted concept mastery |
+| GET | `/courses/{course_id}/evidence/{unit_id}` | Open the exact source excerpt and its page, slide, or timestamp |
+
+The course graph requires a configured text model. Verified course quizzes require both `GROQ_API_KEY`
+and `GEMINI_API_KEY`. Check `assessment_status` when the course build is ready.
+Retain the SQLite file and `uploads/` directory across restarts. For a shared server, configure
+`POD_B_ADMIN_TOKEN` and send it as `X-Admin-Token` when creating courses. Set `SAARTHI_LEGACY_TOKEN`
+to restrict the legacy demo routes to trusted callers using `X-Legacy-Token`.
 
 ---
 

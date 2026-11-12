@@ -119,8 +119,12 @@ def _numbers(text):
 def answers_match(answer_a, answer_b, qtype):
     """Do Groq's answer and Gemini's answer mean the same thing?"""
     a, b = _normalise(answer_a), _normalise(answer_b)
+    if not a or not b or a == "not in source" or b == "not in source":
+        return False
     if a == b:
         return True
+    if qtype == "mcq":
+        return False
     if qtype == "numeric":
         na, nb = _numbers(answer_a), _numbers(answer_b)
         if na and nb:

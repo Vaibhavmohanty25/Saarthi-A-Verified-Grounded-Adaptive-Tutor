@@ -9,8 +9,10 @@ should call POST /pod-b/ask, which returns `retrieved` (contexts), `answer`, `so
 CAVEAT: the labelled set is tiny and written by the same author as the corpus/graph; numbers are optimistic.
 """
 import json
+import os
 import sys
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -76,7 +78,11 @@ else:
     print(f"No LLM ({llm_why}): generative mode skipped.")
 for r in results:
     print(json.dumps(r, indent=2))
-out = Path("eval_results")
-out.mkdir(exist_ok=True)
-(out / "grounding_dev_eval.json").write_text(json.dumps({"backend": retriever.backend_key(), "results": results}, indent=2))
-print("saved -> eval_results/grounding_dev_eval.json")
+default_output = Path(__file__).resolve().parents[1] / "src/eval/results/grounding_dev_eval.json"
+out = Path(os.getenv("SAARTHI_GROUNDING_RESULTS", str(default_output)))
+out.parent.mkdir(parents=True, exist_ok=True)
+with NamedTemporaryFile(mode="w", encoding="utf-8", dir=out.parent, delete=False) as tmp:
+    json.dump({"backend": retriever.backend_key(), "results": results}, tmp, indent=2)
+    tmp.write("\n")
+Path(tmp.name).replace(out)
+print(f"saved -> {out}")

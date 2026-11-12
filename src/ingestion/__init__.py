@@ -1,50 +1,21 @@
-"""
-src/ingestion - Pod A: Multimodal Extraction & Document Parsers
-Exports:
-- process_pdf: PDF text & visual extraction pipeline
-- process_ppt: PowerPoint text & slide visual extraction pipeline
-- process_video: Video Whisper transcription & timestamp alignment
-- extract_pdf_content: Low-level PDF extractor
-- extract_ppt_content: Low-level PPTX extractor
-- extract_images_from_pdf, extract_images_from_ppt
-- chunk_text: Sliding window chunker
-"""
+"""Multimodal ingestion exports, loaded only when requested."""
 
-__all__ = [
-    "process_pdf",
-    "process_ppt",
-    "process_video",
-    "extract_pdf_content",
-    "extract_ppt_content",
-    "extract_images_from_pdf",
-    "extract_images_from_ppt",
-    "chunk_text",
-]
+from importlib import import_module
 
-try:
-    from src.ingestion.processing.chunker import chunk_text
-except ImportError:
-    chunk_text = None
+_MODULES = {
+    "process_pdf": "ingestion.pdf_pipeline",
+    "process_ppt": "ingestion.ppt_pipeline",
+    "process_video": "ingestion.video_pipeline",
+    "extract_pdf_content": "ingestion.pdf_parser",
+    "extract_ppt_content": "ingestion.ppt_parser",
+    "extract_images_from_pdf": "ingestion.pdf_image_extractor",
+    "extract_images_from_ppt": "ingestion.ppt_image_extractor",
+    "chunk_text": "processing.chunker",
+}
+__all__ = list(_MODULES)
 
-try:
-    from src.ingestion.ingestion.pdf_parser import extract_pdf_content
-    from src.ingestion.ingestion.pdf_image_extractor import extract_images_from_pdf
-    from src.ingestion.ingestion.pdf_pipeline import process_pdf
-except ImportError:
-    extract_pdf_content = None
-    extract_images_from_pdf = None
-    process_pdf = None
 
-try:
-    from src.ingestion.ingestion.ppt_parser import extract_ppt_content
-    from src.ingestion.ingestion.ppt_image_extractor import extract_images_from_ppt
-    from src.ingestion.ingestion.ppt_pipeline import process_ppt
-except ImportError:
-    extract_ppt_content = None
-    extract_images_from_ppt = None
-    process_ppt = None
-
-try:
-    from src.ingestion.ingestion.video_pipeline import process_video
-except ImportError:
-    process_video = None
+def __getattr__(name):
+    if name not in _MODULES:
+        raise AttributeError(name)
+    return getattr(import_module(f".{_MODULES[name]}", __name__), name)

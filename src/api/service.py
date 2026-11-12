@@ -10,8 +10,8 @@ Integrates all 4 Pods behind a single asynchronous service:
 
 from __future__ import annotations
 
+import hmac
 import os
-import shutil
 import logging
 import sys
 import sqlite3
@@ -21,8 +21,8 @@ from pathlib import Path
 from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Literal
 
-from fastapi import FastAPI, APIRouter, File, UploadFile, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -32,54 +32,26 @@ if str(REPO_ROOT) not in sys.path:
 
 import env_loader  # Ensures repo root in sys.path and .env loaded
 
-from src.retrieval.config import Settings
-from src.retrieval.runtime import Runtime, load_startup, build_bundle, prune_graph
-from src.graph.graph import KnowledgeGraph, tag_units
-from src.retrieval.api import build_router as build_pod_b_router
-from src.retrieval.schemas import (
-    AnswerResponse,
-    Citation,
-    Claim,
-    ContentUnit as PodBContentUnit,
-    Location,
-    SourceType,
-    make_citation,
-)
-from src.schemas.models import (
-    ConceptNode,
-    Question,
-    LearnerState,
-    SourceLocation,
-    ContentUnit,
-)
-
-# Pod C Assessment & Learner Model
-from src.mock_data import (
-    get_concepts as get_mock_concepts,
-    get_questions as get_mock_questions,
-    get_question_concept_id,
-)
+from src.api.courses import build_courses_router
+from src.api.learning import DEMO_COURSE, LearningStore
+from src.api.materials import AUDIO_EXTENSIONS, VIDEO_EXTENSIONS, extract_units, stage_upload
+from src.graph.graph import tag_units
+from src.learner_model.adaptive import build_diagnostic, build_quiz
 from src.learner_model.bkt import LearnerModel
-from src.learner_model.adaptive import (
-    build_quiz,
-    select_next_concept,
-    choose_difficulty,
+from src.learner_model.live_course_data import (
+    AblationSimulator,
+    CONCEPT_DESCRIPTIONS,
+    LIVE_COURSE_CONCEPTS,
+    LIVE_QUESTION_BANK,
 )
 from src.learner_model.report import build_report
-from src.assessment.generator import (
-    build_source_text,
-    generate_question,
-    select_groq_model,
-    source_location,
-)
-from src.assessment.verifier import verify_question, make_gemini_client, answers_match
-from src.assessment.dedup import find_duplicate
-
-# Pod A Ingestion Pipelines
-from src.ingestion.processing.chunker import chunk_text
-from src.ingestion.ingestion.ppt_parser import extract_ppt_content
-from src.ingestion.ingestion.pdf_parser import extract_pdf_content
-from src.retrieval.schemas import ConceptNode as GraphConceptNode
+from src.mock_data import get_question_concept_id
+from src.retrieval.api import build_router as build_pod_b_router
+from src.retrieval.config import Settings
+from src.retrieval.runtime import Runtime, build_bundle, load_startup, prune_graph
+from src.retrieval.schemas import AnswerResponse, ConceptNode as GraphConceptNode, ContentUnit as PodBContentUnit
+from src.retrieval.security import make_admin_guard
+from src.schemas.models import Question
 
 log = logging.getLogger("saarthi.api")
 
@@ -101,7 +73,7 @@ app = FastAPI(
 # Enable CORS for Next.js (port 3000) and dev clients
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -111,20 +83,9 @@ app.add_middleware(
 app.include_router(build_pod_b_router(rt, settings))
 
 # Live student, concept, & quiz bank state (mined from uploaded course materials)
-from src.learner_model.live_course_data import (
-    LIVE_COURSE_CONCEPTS,
-    LIVE_QUESTION_BANK,
-    CONCEPT_DESCRIPTIONS,
-    AblationSimulator,
-    get_live_question_concept_id,
-)
-
 CONCEPTS = list(LIVE_COURSE_CONCEPTS)
 CONCEPTS_BY_ID = {c.concept_id: c for c in CONCEPTS}
 QUESTION_BANK: Dict[str, Question] = {q.q_id: q for q in LIVE_QUESTION_BANK}
-STUDENTS: Dict[str, LearnerModel] = {}
-SESSIONS: Dict[str, List[Any]] = {}
-USED_QIDS: Dict[str, set] = {}
 
 # Sync concepts into runtime graph bundle
 for c in CONCEPTS:
@@ -144,12 +105,13 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 # --------------------------------------------------------------------------- #
 # Session Persistence (SQLite)
 # --------------------------------------------------------------------------- #
-SESSION_DB_PATH = Path("saarthi_sessions.db")
+SESSION_DB_PATH = Path(os.getenv("SAARTHI_DB_PATH", "saarthi_sessions.db"))
 
 
 def _get_session_db() -> sqlite3.Connection:
     conn = sqlite3.connect(str(SESSION_DB_PATH), check_same_thread=False)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -187,14 +149,23 @@ def _init_session_db() -> None:
 
 
 _init_session_db()
+learning = LearningStore(SESSION_DB_PATH)
+app.include_router(build_courses_router(learning, settings, UPLOAD_DIR / "courses"))
+
+if legacy_token := os.getenv("SAARTHI_LEGACY_TOKEN"):
+    @app.middleware("http")
+    async def protect_legacy_routes(request: Request, call_next):
+        path = request.url.path
+        public = path in {"/health", "/courses"} or path.startswith("/courses/")
+        if request.method != "OPTIONS" and not public:
+            supplied = request.headers.get("x-legacy-token", "")
+            if not hmac.compare_digest(supplied.encode(), legacy_token.encode()):
+                return JSONResponse({"detail": "Legacy access token required."}, status_code=401)
+        return await call_next(request)
 
 
 def get_student(student_id: str) -> LearnerModel:
-    if student_id not in STUDENTS:
-        STUDENTS[student_id] = LearnerModel([c.concept_id for c in CONCEPTS])
-        SESSIONS[student_id] = []
-        USED_QIDS[student_id] = set()
-    return STUDENTS[student_id]
+    return learning.learner(DEMO_COURSE, student_id, CONCEPTS)
 
 
 def q_to_dict(q: Question, include_answer: bool = False) -> Dict[str, Any]:
@@ -241,12 +212,8 @@ class QuizRequest(BaseModel):
 class AnswerRequest(BaseModel):
     student_id: str
     q_id: str
-    answer: str
-
-
-class GenerateRequest(BaseModel):
-    student_id: str
-    concept_id: str
+    answer: str = Field(..., min_length=1, max_length=4000)
+    attempt_id: Optional[str] = Field(None, min_length=1, max_length=64)
 
 
 class SessionCreate(BaseModel):
@@ -368,25 +335,12 @@ def get_graph():
         evidence_details = []
         for ev_id in c.evidence_units:
             u = rt.bundle.store.get(ev_id)
-            if not u:
-                # search for slide match
-                for cand in rt.bundle.store.all():
-                    if ev_id in cand.unit_id or cand.unit_id in ev_id:
-                        u = cand
-                        break
             if u:
                 evidence_details.append({
                     "unit_id": u.unit_id,
                     "source_id": u.source_id,
-                    "location": u.location.model_dump() if hasattr(u.location, "model_dump") else u.location,
+                    "location": u.location.model_dump(),
                     "text": u.text,
-                })
-            else:
-                evidence_details.append({
-                    "unit_id": ev_id,
-                    "source_id": "Course Lecture Slide",
-                    "location": {"slide": 1},
-                    "text": f"Grounded course lecture material covering {c.name}.",
                 })
 
         nodes.append({
@@ -394,8 +348,8 @@ def get_graph():
             "name": c.name,
             "topic": c.topic,
             "prerequisites": c.prerequisites,
-            "evidence_count": len(c.evidence_units),
-            "evidence_units": c.evidence_units,
+            "evidence_count": len(evidence_details),
+            "evidence_units": [item["unit_id"] for item in evidence_details],
             "evidence_details": evidence_details,
             "description": meta.get("description", f"Concept under {c.topic}."),
             "keyTakeaways": meta.get("keyTakeaways", []),
@@ -434,24 +388,14 @@ def get_graph():
 def get_evidence_unit(unit_id: str):
     """Retrieve unit text and coordinates from live course corpus."""
     u = rt.bundle.store.get(unit_id)
-    if not u:
-        for cand in rt.bundle.store.all():
-            if unit_id in cand.unit_id or cand.unit_id in unit_id:
-                u = cand
-                break
-    if u:
-        return {
-            "unit_id": u.unit_id,
-            "source_id": u.source_id,
-            "location": u.location.model_dump() if hasattr(u.location, "model_dump") else u.location,
-            "text": u.text,
-            "image_caption": getattr(u, "image_caption", None),
-        }
+    if u is None:
+        raise HTTPException(404, "Evidence unit not found.")
     return {
-        "unit_id": unit_id,
-        "source_id": "Course Material",
-        "location": {"slide": 1},
-        "text": f"Grounded excerpt for {unit_id}.",
+        "unit_id": u.unit_id,
+        "source_id": u.source_id,
+        "location": u.location.model_dump(),
+        "text": u.text,
+        "image_caption": u.image_caption,
     }
 
 
@@ -465,226 +409,84 @@ def list_concepts():
 # --------------------------------------------------------------------------- #
 # 4. Multimodal Course Ingestion (Pod A)
 # --------------------------------------------------------------------------- #
-def pod_a_to_pod_b_unit(u) -> PodBContentUnit:
-    """Adapter bridging Pod A ContentUnit to Pod B ContentUnit contract."""
-    loc_data = u.location if isinstance(getattr(u, "location", None), dict) else {}
-    page = loc_data.get("page")
-    slide = loc_data.get("slide")
-    ts = loc_data.get("timestamp")
-    t_start = None
-    if isinstance(ts, dict):
-        t_start = ts.get("start")
-    elif isinstance(ts, (int, float)):
-        t_start = float(ts)
-
-    prefix = ""
-    if slide is not None:
-        prefix = f"Slide {slide} ({Path(u.source_id).stem}): "
-    elif page is not None:
-        prefix = f"Page {page} ({Path(u.source_id).stem}): "
-    elif t_start is not None:
-        secs = int(t_start)
-        h, rem = divmod(secs, 3600)
-        m, s = divmod(rem, 60)
-        ts_str = f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
-        prefix = f"Video @{ts_str} ({Path(u.source_id).stem}): "
-
-    full_text = f"{prefix}{u.text or ''}".strip()
-    if not full_text and getattr(u, "visual_description", None):
-        full_text = f"{prefix}[Visual] {u.visual_description}".strip()
-
-    raw_type = str(getattr(u, "source_type", "")).lower()
-    if t_start is not None:
-        loc = Location(t_start=t_start)
-    elif slide is not None:
-        loc = Location(slide=slide)
-    elif page is not None:
-        loc = Location(page=page)
-    else:
-        if "slide" in raw_type or "ppt" in raw_type:
-            loc = Location(slide=1)
-        elif "video" in raw_type or "audio" in raw_type:
-            loc = Location(t_start=0.0)
-        else:
-            loc = Location(page=1)
-    st = loc.kind
-
-    return PodBContentUnit(
-        unit_id=str(u.unit_id),
-        source_id=str(u.source_id),
-        source_type=st,
-        location=loc,
-        text=full_text,
-        image_caption=getattr(u, "visual_description", None),
+def _upload_concept(path: Path, title: str, units: list[PodBContentUnit]) -> GraphConceptNode:
+    name = Path(title).stem.replace("-", " ").replace("_", " ")
+    return GraphConceptNode(
+        concept_id=f"doc_{path.stem}",
+        name=name,
+        topic="t-course-materials",
+        aliases=[title, name],
+        evidence_units=[unit.unit_id for unit in units],
     )
 
 
-@app.post("/ingest/upload", tags=["Ingestion"])
-async def upload_material(
+@app.post("/ingest/upload", tags=["Ingestion"], dependencies=[Depends(make_admin_guard(settings.admin_token))])
+def upload_material(
     file: Optional[UploadFile] = File(None),
     files: Optional[List[UploadFile]] = File(None),
 ):
-    """
-    Ingest up to 10 course materials (PDF, PPTX, Images, Video) into atomic ContentUnits.
-    Enforces that videos must be uploaded individually by themselves.
-    Updates the active retrieval store and knowledge graph dynamically.
-    """
-    upload_list: List[UploadFile] = []
-    if files:
-        upload_list.extend(files)
-    if file:
-        upload_list.append(file)
+    """Index uploaded files in the legacy shared demo corpus."""
+    uploads = [*(files or []), *([file] if file else [])]
+    if not 1 <= len(uploads) <= 10:
+        raise HTTPException(400, "Provide between one and ten files.")
+    if len(uploads) > 1 and any(
+        Path(item.filename or "").suffix.lower() in VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+        for item in uploads
+    ):
+        raise HTTPException(400, "Upload a video or audio file individually.")
 
-    if not upload_list:
-        raise HTTPException(status_code=400, detail="No files provided for upload.")
-
-    if len(upload_list) > 10:
-        raise HTTPException(status_code=400, detail="Maximum limit is 10 files per upload batch.")
-
-    video_exts = {".mp4", ".mov", ".webm", ".avi", ".mkv", ".mp3", ".wav"}
-    has_video = any(Path(f.filename or "").suffix.lower() in video_exts for f in upload_list)
-    if has_video and len(upload_list) > 1:
-        raise HTTPException(
-            status_code=400,
-            detail="Videos require dedicated Whisper audio transcription and keyframe alignment, and must be uploaded individually by themselves."
-        )
-
-    all_units_to_add = []
-    processed_files = []
-
+    staged = []
+    original_names = []
+    all_units = []
+    concepts = []
     try:
-        for uploaded_file in upload_list:
-            filename = uploaded_file.filename or "uploaded_document"
-            dest = UPLOAD_DIR / filename
-            with open(dest, "wb") as f:
-                shutil.copyfileobj(uploaded_file.file, f)
+        for upload in uploads:
+            path, title = stage_upload(upload, UPLOAD_DIR)
+            staged.append(path)
+            original_names.append(title)
+            units = extract_units(path, title)
+            if not units:
+                raise HTTPException(422, f"No usable course content found in {title}.")
+            all_units.extend(units)
+            concepts.append(_upload_concept(path, title, units))
+        result = rt.ingest(all_units, concepts=concepts)
+    except Exception as exc:
+        for path in staged:
+            path.unlink(missing_ok=True)
+        if isinstance(exc, HTTPException):
+            raise
+        log.warning("Course material upload failed", exc_info=True)
+        if isinstance(exc, (ValueError, UnicodeError)):
+            raise HTTPException(422, "Course material could not be indexed.") from exc
+        raise HTTPException(500, "Course material processing failed.") from exc
 
-            suffix = dest.suffix.lower()
-            pod_a_units = []
-
-            if suffix in [".ppt", ".pptx"]:
-                pod_a_units = extract_ppt_content(str(dest))
-            elif suffix == ".pdf":
-                pod_a_units = extract_pdf_content(str(dest))
-            elif suffix in video_exts:
-                # Dedicated Whisper speech-to-text audio pipeline
-                try:
-                    from src.ingestion.ingestion.audio_extractor import extract_audio
-                    from src.ingestion.ingestion.video_transcriber import transcribe_audio
-                    aud = extract_audio(str(dest))
-                    pod_a_units = transcribe_audio(aud, dest.name)
-                except Exception as e:
-                    log.warning(f"Video audio transcription failed for {filename}: {e}, trying full pipeline")
-                    try:
-                        from src.ingestion.ingestion.video_pipeline import process_video
-                        v_res = process_video(str(dest))
-                        pod_a_units = v_res.get("all_units", [])
-                    except Exception as e2:
-                        log.error(f"Full video pipeline also failed for {filename}: {e2}")
-            elif suffix in [".png", ".jpg", ".jpeg", ".webp"]:
-                caption = f"Educational diagram extracted from {dest.name}"
-                try:
-                    from src.ingestion.vision.image_captioner import describe_image
-                    c = describe_image(str(dest))
-                    if c and c != "NOT_EDUCATIONAL":
-                        caption = c
-                except Exception as e:
-                    log.warning(f"Vision captioning fallback for {filename}: {e}")
-
-                from src.ingestion.schemas.content_unit import ContentUnit as PodAUnit
-                pod_a_units.append(PodAUnit(
-                    unit_id=f"{dest.stem}_diag1",
-                    source_id=dest.name,
-                    source_type="diagram",
-                    location={"page": 1},
-                    chunk_index=1,
-                    text=caption,
-                    visual_description=caption,
-                ))
-            else:
-                content = dest.read_text(encoding="utf-8", errors="ignore")
-                chunks = chunk_text(content) if chunk_text else [content]
-                from src.ingestion.schemas.content_unit import ContentUnit as PodAUnit
-                for c_idx, ch in enumerate(chunks, start=1):
-                    pod_a_units.append(PodAUnit(
-                        unit_id=f"{dest.stem}_c{c_idx}",
-                        source_id=dest.name,
-                        source_type="document",
-                        location={"page": c_idx},
-                        chunk_index=c_idx,
-                        text=ch,
-                    ))
-
-            converted_units = [pod_a_to_pod_b_unit(u) for u in pod_a_units]
-
-            if converted_units:
-                doc_stem = dest.stem
-                clean_title = doc_stem.lower().replace("-", " ").replace("_", " ")
-                doc_aliases = [
-                    doc_stem.lower(),
-                    dest.name.lower(),
-                    clean_title,
-                    "video",
-                    "uploaded video",
-                    "lecture video",
-                    "recording",
-                    "slides",
-                    "presentation",
-                    "notes",
-                    "uploaded document",
-                ]
-                for word in clean_title.split():
-                    if len(word) > 3 and word not in doc_aliases:
-                        doc_aliases.append(word)
-
-                cid = f"doc_{doc_stem.lower().replace(' ', '_').replace('-', '_')}"
-                if cid not in rt.bundle.graph.concepts:
-                    ev_ids = [u.unit_id for u in converted_units[:10]]
-                    rt.bundle.graph.concepts[cid] = GraphConceptNode(
-                        concept_id=cid,
-                        name=clean_title.title(),
-                        topic="t-course-materials",
-                        aliases=doc_aliases,
-                        evidence_units=ev_ids,
-                        prerequisites=[],
-                    )
-                all_units_to_add.extend(converted_units)
-                processed_files.append(filename)
-
-        if all_units_to_add:
-            rt.ingest(all_units_to_add, replace_sources=True)
-
-        return {
-            "status": "success",
-            "files_processed": len(processed_files),
-            "filenames": processed_files,
-            "filename": processed_files[0] if processed_files else "batch",
-            "units_created": len(all_units_to_add),
-            "sample_units": [
-                {
-                    "unit_id": u.unit_id,
-                    "source_id": u.source_id,
-                    "source_type": u.source_type,
-                    "location": {"slide": u.location.slide, "page": u.location.page, "timestamp": u.location.t_start},
-                    "text": u.text[:160] + "...",
-                }
-                for u in all_units_to_add[:8]
-            ],
-            "total_corpus_units": len(rt.bundle.store),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        log.error(f"Upload processing failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    filenames = [path.name for path in staged]
+    return {
+        "status": "success",
+        "files_processed": len(filenames),
+        "filenames": filenames,
+        "original_filenames": original_names,
+        "filename": filenames[0],
+        "units_created": len(all_units),
+        "sample_units": [
+            {
+                "unit_id": unit.unit_id,
+                "source_id": unit.source_id,
+                "source_type": unit.source_type,
+                "location": {"slide": unit.location.slide, "page": unit.location.page, "timestamp": unit.location.t_start},
+                "text": unit.text[:160],
+            }
+            for unit in all_units[:8]
+        ],
+        "total_corpus_units": result["total_units"],
+    }
 
 
 @app.api_route("/uploads/{filename}", methods=["GET", "HEAD"], tags=["Ingestion"])
 async def get_uploaded_file(filename: str):
     """Serve uploaded media files for browser preview and inspection."""
-    file_path = UPLOAD_DIR / filename
-    if not file_path.exists() or not file_path.is_file():
+    file_path = (UPLOAD_DIR / filename).resolve()
+    if file_path.parent != UPLOAD_DIR.resolve() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
     ext = file_path.suffix.lower()
@@ -804,76 +606,39 @@ def list_uploaded_materials():
 @app.post("/quiz", tags=["Assessment"])
 def generate_quiz(req: QuizRequest):
     """Generates an adaptive or customized quiz tailored to question count and difficulty preferences."""
-    student = get_student(req.student_id)
-    if len(USED_QIDS[req.student_id]) >= len(QUESTION_BANK):
-        USED_QIDS[req.student_id].clear()
-
-    qs = build_quiz(
-        CONCEPTS,
-        student.all_masteries(),
-        list(QUESTION_BANK.values()),
-        used_ids=USED_QIDS[req.student_id],
-        size=req.size,
-        target_difficulty=req.difficulty,
-        target_concept=req.concept_id,
+    if req.concept_id and req.concept_id not in CONCEPTS_BY_ID:
+        raise HTTPException(404, "Concept not found.")
+    eligible = [
+        q for q in QUESTION_BANK.values() if q.verified
+        and (req.concept_id is None or get_question_concept_id(q) == req.concept_id)
+    ]
+    seen = learning.issued_questions(DEMO_COURSE, req.student_id)
+    unseen = [q for q in eligible if q.q_id not in seen]
+    pool = unseen if len(unseen) >= min(req.size, len(eligible)) else eligible
+    questions = build_quiz(
+        CONCEPTS, get_student(req.student_id).all_masteries(), pool,
+        size=min(req.size, len(pool)),
+        target_difficulty=req.difficulty, target_concept=req.concept_id,
     )
-    if not qs or len(qs) < req.size:
-        USED_QIDS[req.student_id].clear()
-        qs = build_quiz(
-            CONCEPTS,
-            student.all_masteries(),
-            list(QUESTION_BANK.values()),
-            used_ids=USED_QIDS[req.student_id],
-            size=req.size,
-            target_difficulty=req.difficulty,
-            target_concept=req.concept_id,
-        )
-    for q in qs:
-        USED_QIDS[req.student_id].add(q.q_id)
     return {
         "student_id": req.student_id,
-        "questions": [q_to_dict(q, include_answer=False) for q in qs],
+        "questions": [
+            {**q_to_dict(q), "attempt_id": attempt}
+            for q, attempt in learning.issue(DEMO_COURSE, req.student_id, questions)
+        ],
     }
 
 
 @app.post("/answer", tags=["Assessment"])
 def submit_answer(req: AnswerRequest):
-    """
-    Grades an answer, performs BKT update with slip/guess weighting,
-    and walks the prerequisite DAG backward if remediation is needed.
-    """
-    student = get_student(req.student_id)
-    q = QUESTION_BANK.get(req.q_id)
-    if q is None:
-        raise HTTPException(status_code=404, detail=f"unknown question {req.q_id}")
-
-    correct = answers_match(req.answer, q.answer, q.type)
-    concept_id = get_question_concept_id(q)
-    new_mastery = student.observe(concept_id, correct)
-    SESSIONS[req.student_id].append((q, req.answer, correct))
-
-    nxt = select_next_concept(CONCEPTS, student.all_masteries())
-    try:
-        conn = _get_session_db()
-        conn.execute(
-            "INSERT INTO completed_quizzes (id, student_id, topic, score, total, completed_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (str(uuid.uuid4()), req.student_id, q.topic, 1.0 if correct else 0.0, 1, datetime.now(timezone.utc).isoformat())
-        )
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        log.warning(f"Failed to persist completed quiz: {e}")
-
-    explanation_text = getattr(q, "explanation", None) or f"Verified assessment answer grounded in course lecture evidence ({q.topic})."
-    return {
-        "correct": correct,
-        "correct_answer": q.answer,
-        "explanation": explanation_text,
-        "concept_id": concept_id,
-        "new_mastery": round(new_mastery, 4),
-        "next_concept": nxt,
-        "next_difficulty": choose_difficulty(student.mastery(nxt)),
-    }
+    """Grade a question and commit its mastery update with the answer attempt."""
+    question = QUESTION_BANK.get(req.q_id)
+    if question is None:
+        raise HTTPException(404, "Question not found.")
+    return learning.grade(
+        DEMO_COURSE, req.student_id, CONCEPTS, question, req.answer, req.attempt_id,
+        legacy_summary=True,
+    )
 
 
 @app.get("/mastery/{student_id}", tags=["Assessment"])
@@ -901,30 +666,22 @@ def get_mastery(student_id: str):
 def get_report(student_id: str):
     """Generates the post-assessment diagnostic report with misconception analysis."""
     student = get_student(student_id)
-    text = build_report(SESSIONS[student_id], student, CONCEPTS)
+    text = build_report(learning.history(DEMO_COURSE, student_id, QUESTION_BANK), student, CONCEPTS)
     return {"student_id": student_id, "report": text}
 
 
 @app.post("/diagnostic", tags=["Assessment"])
 def run_diagnostic(student_id: str = "student_default"):
-    """Initializes a new student's mastery profile via an 8-question cold-start diagnostic."""
-    student = get_student(student_id)
-    # Calibrated cold-start diagnostic results
-    initial_priors = {
-        "derivatives": 0.35,
-        "chain_rule": 0.45,
-        "loss_function": 0.65,
-        "gradient_descent": 0.70,
-        "learning_rate": 0.50,
-        "neural_networks": 0.30,
-    }
-    for cid, val in initial_priors.items():
-        if cid in student._p:
-            student._p[cid] = val
+    """Issue a diagnostic whose answers update mastery without a learning transition."""
+    questions = build_diagnostic(CONCEPTS, list(QUESTION_BANK.values()))
     return {
         "student_id": student_id,
-        "status": "diagnostic_complete",
-        "masteries": student.all_masteries(),
+        "status": "diagnostic_ready",
+        "masteries": get_student(student_id).all_masteries(),
+        "questions": [
+            {**q_to_dict(q), "attempt_id": attempt}
+            for q, attempt in learning.issue(DEMO_COURSE, student_id, questions, diagnostic=True)
+        ],
     }
 
 
@@ -932,7 +689,7 @@ def run_diagnostic(student_id: str = "student_default"):
 # 6. Evaluation & Benchmarking (Pod D)
 # --------------------------------------------------------------------------- #
 @app.get("/eval/ablation", tags=["Evaluation"])
-def get_ablation_benchmarks(students: int = 30, sessions: int = 5):
+def get_ablation_benchmarks(students: int = Query(30, ge=1, le=100), sessions: int = Query(5, ge=1, le=20)):
     """
     Returns empirical benchmark data comparing Adaptive Tutor vs. Random Selection.
     Simulates students over the active course concepts and question bank dynamically.
@@ -942,118 +699,36 @@ def get_ablation_benchmarks(students: int = 30, sessions: int = 5):
     return sim.run_benchmark(num_students=students, sessions=sessions)
 
 
-@app.get("/eval/ragas", tags=["Evaluation"])
-def get_ragas_metrics():
-    """RAGAS automated grounding and retrieval quality metrics."""
-    return {
-        "faithfulness": 0.942,
-        "answer_relevancy": 0.915,
-        "context_precision": 0.893,
-        "context_recall": 0.884,
-        "refusal_accuracy": 0.981,
-        "verifier_agreement": 0.933,
-    }
+@app.get("/eval/ragas", tags=["Evaluation"], deprecated=True)
+@app.get("/eval/grounding", tags=["Evaluation"])
+def get_grounding_metrics():
+    """Serve the recorded development evaluation with its actual metrics and backend."""
+    path = Path(os.getenv(
+        "SAARTHI_GROUNDING_RESULTS", str(REPO_ROOT / "src/eval/results/grounding_dev_eval.json")
+    ))
+    try:
+        result = json_lib.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(result.get("backend"), str) or not isinstance(result.get("results"), list):
+            raise ValueError("invalid grounding results")
+    except (OSError, ValueError, AttributeError):
+        raise HTTPException(503, "No valid grounding evaluation is available.")
+    return {"evaluation": "grounding_dev", **result}
 
 
 # --------------------------------------------------------------------------- #
-# Auto-index any course material already in uploads/
+# Restore unindexed legacy uploads at startup
 # --------------------------------------------------------------------------- #
 def _init_existing_uploads():
-    """Index files found in uploads/ into the live store on startup."""
-    if not UPLOAD_DIR.exists():
-        return
-    for p in UPLOAD_DIR.iterdir():
-        if not p.is_file():
+    for path in UPLOAD_DIR.iterdir():
+        if not path.is_file() or rt.bundle.store.by_source(path.name):
             continue
-        suffix = p.suffix.lower()
-        pod_a_units = []
         try:
-            if suffix in [".ppt", ".pptx"]:
-                pod_a_units = extract_ppt_content(str(p))
-            elif suffix == ".pdf":
-                pod_a_units = extract_pdf_content(str(p))
-            elif suffix in [".png", ".jpg", ".jpeg", ".webp"]:
-                from src.ingestion.schemas.content_unit import ContentUnit as PodAUnit
-                caption = f"Educational visual diagram from {p.name}"
-                try:
-                    from src.ingestion.vision.image_captioner import describe_image
-                    c = describe_image(str(p))
-                    if c and c != "NOT_EDUCATIONAL":
-                        caption = c
-                except Exception:
-                    pass
-                pod_a_units = [PodAUnit(
-                    unit_id=f"{p.stem}_diag1",
-                    source_id=p.name,
-                    source_type="diagram",
-                    location={"page": 1},
-                    chunk_index=1,
-                    text=caption,
-                    visual_description=caption,
-                )]
-            elif suffix in [".txt", ".md"]:
-                content = p.read_text(encoding="utf-8", errors="ignore")
-                chunks = chunk_text(content) if chunk_text else [content]
-                from src.ingestion.schemas.content_unit import ContentUnit as PodAUnit
-                for c_idx, ch in enumerate(chunks, start=1):
-                    pod_a_units.append(PodAUnit(
-                        unit_id=f"{p.stem}_c{c_idx}",
-                        source_id=p.name,
-                        source_type="document",
-                        location={"page": c_idx},
-                        chunk_index=c_idx,
-                        text=ch,
-                    ))
-            elif suffix in [".mp4", ".mov", ".webm", ".avi", ".mkv"]:
-                try:
-                    aud_file = Path("extracted_audio") / f"{p.stem}.mp3"
-                    if not aud_file.exists():
-                        from src.ingestion.ingestion.audio_extractor import extract_audio
-                        aud_path = extract_audio(str(p))
-                        aud_file = Path(aud_path)
-                    from src.ingestion.ingestion.video_transcriber import transcribe_audio
-                    pod_a_units = transcribe_audio(str(aud_file), p.name)
-                except Exception as e:
-                    log.warning(f"Video startup indexing failed for {p.name}: {e}")
+            units = extract_units(path, path.name)
+            if units:
+                rt.ingest(units, concepts=[_upload_concept(path, path.name, units)])
+        except Exception:
+            log.warning("Could not restore uploaded material %s", path.name, exc_info=True)
 
-            if pod_a_units:
-                units = [pod_a_to_pod_b_unit(u) for u in pod_a_units]
-                doc_stem = p.stem
-                clean_title = doc_stem.lower().replace("-", " ").replace("_", " ")
-                doc_aliases = [
-                    doc_stem.lower(),
-                    p.name.lower(),
-                    clean_title,
-                    "video",
-                    "uploaded video",
-                    "lecture video",
-                    "recording",
-                    "ppt",
-                    "pptx",
-                    "uploaded ppt",
-                    "slides",
-                    "presentation",
-                    "uploaded presentation",
-                    "uploaded document",
-                ]
-                for word in clean_title.split():
-                    if len(word) > 3 and word not in doc_aliases:
-                        doc_aliases.append(word)
-
-                cid = f"doc_{doc_stem.lower().replace(' ', '_').replace('-', '_')}"
-                if cid not in rt.bundle.graph.concepts:
-                    rt.bundle.graph.concepts[cid] = GraphConceptNode(
-                        concept_id=cid,
-                        name=clean_title.title(),
-                        topic="t-course-materials",
-                        aliases=doc_aliases,
-                        evidence_units=[u.unit_id for u in units[:10]],
-                        prerequisites=[],
-                    )
-                rt.ingest(units, replace_sources=True)
-                log.info(f"Startup indexed {len(units)} units from {p.name}")
-        except Exception as exc:
-            log.warning(f"Startup indexing of {p.name} skipped: {exc}")
 
 _init_existing_uploads()
 
@@ -1093,10 +768,10 @@ def create_session(req: SessionCreate):
 
 
 @app.get("/sessions/{session_id}", tags=["Sessions"])
-def get_session(session_id: str):
+def get_session(session_id: str, student_id: str = "student_default"):
     """Get a session with all its persisted messages."""
     conn = _get_session_db()
-    session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+    session = conn.execute("SELECT * FROM chat_sessions WHERE id = ? AND student_id = ?", (session_id, student_id)).fetchone()
     if not session:
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
@@ -1114,27 +789,33 @@ def get_session(session_id: str):
 
 
 @app.delete("/sessions/{session_id}", tags=["Sessions"])
-def delete_session(session_id: str):
+def delete_session(session_id: str, student_id: str = "student_default"):
     """Delete a session and all its messages."""
     conn = _get_session_db()
-    conn.execute("DELETE FROM chat_messages WHERE session_id = ?", (session_id,))
-    conn.execute("DELETE FROM chat_sessions WHERE id = ?", (session_id,))
+    deleted = conn.execute(
+        "DELETE FROM chat_sessions WHERE id = ? AND student_id = ?", (session_id, student_id)
+    )
     conn.commit()
     conn.close()
+    if deleted.rowcount == 0:
+        raise HTTPException(404, "Session not found.")
+
     return {"status": "deleted", "session_id": session_id}
 
 
 @app.patch("/sessions/{session_id}/title", tags=["Sessions"])
-def update_session_title(session_id: str, req: TitleUpdateRequest):
+def update_session_title(session_id: str, req: TitleUpdateRequest, student_id: str = "student_default"):
     """Rename a session."""
     now = datetime.now(timezone.utc).isoformat()
     conn = _get_session_db()
-    conn.execute(
-        "UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ?",
-        (req.title, now, session_id)
+    updated = conn.execute(
+        "UPDATE chat_sessions SET title = ?, updated_at = ? WHERE id = ? AND student_id = ?",
+        (req.title, now, session_id, student_id),
     )
     conn.commit()
     conn.close()
+    if updated.rowcount == 0:
+        raise HTTPException(404, "Session not found.")
     return {"status": "updated", "session_id": session_id, "title": req.title}
 
 
@@ -1146,6 +827,9 @@ def session_chat(session_id: str, req: SessionChatRequest):
     """
     conn = _get_session_db()
     session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
+    if session is not None and session["student_id"] != req.student_id:
+        conn.close()
+        raise HTTPException(404, "Session not found.")
     if not session:
         now = datetime.now(timezone.utc).isoformat()
         auto_title = req.question[:60] + ("..." if len(req.question) > 60 else "")
