@@ -21,6 +21,7 @@ from contextlib import closing
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Annotated, List, Optional, Dict, Any, Literal
+from urllib.parse import quote
 
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -574,8 +575,8 @@ def list_uploaded_materials():
             if f.is_file():
                 ext = f.suffix.lower()
                 category = "document"
-                if ext in [".ppt", ".pptx"]:
-                    category = "pptx"
+                if ext in {".ppt", ".pptx"}:
+                    category = ext[1:]
                 elif ext == ".pdf":
                     category = "pdf"
                 elif ext in [".mp4", ".mov", ".webm"]:
@@ -615,7 +616,7 @@ def list_uploaded_materials():
                     "size_bytes": f.stat().st_size,
                     "file_type": category,
                     "modified_at": datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc).isoformat(),
-                    "download_url": f"/uploads/{f.name}",
+                    "download_url": f"/uploads/{quote(f.name, safe='')}",
                     "units_count": len(units),
                     "linked_concepts": linked,
                     "sample_units": sample_units,

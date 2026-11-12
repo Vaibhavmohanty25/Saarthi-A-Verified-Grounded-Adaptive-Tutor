@@ -40,6 +40,7 @@ export function MediaPreviewModal({
 
   const apiBase = getApiBaseUrl();
   const fileUrl = `${apiBase}${material.download_url}`;
+  const isLegacyPresentation = material.file_type === "ppt" || material.filename.toLowerCase().endsWith(".ppt");
 
   function formatBytes(bytes: number): string {
     if (bytes < 1024) return `${bytes} B`;
@@ -55,9 +56,10 @@ export function MediaPreviewModal({
           icon: FileText,
           badgeClass: "bg-rose-500/10 text-rose-600 dark:text-rose-400 border-rose-500/20",
         };
+      case "ppt":
       case "pptx":
         return {
-          label: "PPTX Lecture Slides",
+          label: type === "ppt" ? "Legacy PowerPoint (.ppt)" : "PPTX Lecture Slides",
           icon: Layers,
           badgeClass: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20",
         };
@@ -82,7 +84,7 @@ export function MediaPreviewModal({
     }
   }
 
-  const catInfo = getCategoryInfo(material.file_type);
+  const catInfo = getCategoryInfo(isLegacyPresentation ? "ppt" : material.file_type);
   const CatIcon = catInfo.icon;
 
   const handleSeekVideo = (timestamp?: string | number | null, seconds?: number | null) => {
@@ -209,6 +211,11 @@ export function MediaPreviewModal({
 
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 min-h-[350px]">
+          {isLegacyPresentation && material.units_count === 0 && (
+            <p className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-200">
+              Saarthi requires a .pptx to extract slide text and concepts. Open the .ppt in PowerPoint, save it as a PowerPoint Presentation (.pptx), and upload the saved copy.
+            </p>
+          )}
           {activeTab === "preview" && (
             <div className="h-full flex flex-col space-y-4">
               {/* PDF Viewer */}
@@ -320,11 +327,11 @@ export function MediaPreviewModal({
               )}
 
               {/* PPTX Presentation Slide Cards */}
-              {material.file_type === "pptx" && (
+              {(isLegacyPresentation || material.file_type === "pptx") && (
                 <div className="space-y-4">
                   <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-800 dark:text-amber-200 flex items-center justify-between">
                     <span>
-                      📊 Showing extracted slide deck knowledge units. Use the link to open or download the complete presentation file.
+                      {material.units_count > 0 ? "Showing extracted slide text." : "Download the original presentation."}
                     </span>
                     <a
                       href={fileUrl}
@@ -333,7 +340,7 @@ export function MediaPreviewModal({
                       className="px-3 py-1 rounded-lg bg-amber-600 text-white font-semibold flex items-center gap-1 hover:bg-amber-700 transition-colors shrink-0"
                     >
                       <Download className="w-3.5 h-3.5" />
-                      <span>Download PPTX</span>
+                      <span>{isLegacyPresentation ? "Download PPT" : "Download PPTX"}</span>
                     </a>
                   </div>
 
@@ -420,6 +427,9 @@ export function MediaPreviewModal({
           {/* Extracted Chunks Tab */}
           {activeTab === "chunks" && (
             <div className="space-y-3">
+              {material.sample_units.length === 0 && (
+                <p className="p-8 text-center text-xs text-zinc-500">No extracted units are available for this file.</p>
+              )}
               {material.sample_units.map((unit, idx) => (
                 <div
                   key={unit.unit_id || idx}
@@ -491,7 +501,7 @@ export function MediaPreviewModal({
                 </div>
               ) : (
                 <div className="p-8 text-center text-xs text-zinc-500">
-                  This media file has been ingested into the vector retrieval store and will automatically ground follow-up concept nodes.
+                  No concepts are linked to this file.
                 </div>
               )}
             </div>
@@ -500,7 +510,7 @@ export function MediaPreviewModal({
 
         {/* Modal Footer */}
         <div className="p-3.5 sm:p-4 border-t border-zinc-200/80 dark:border-white/[0.08] flex items-center justify-between text-xs text-zinc-500 shrink-0 bg-zinc-50/50 dark:bg-white/[0.01]">
-          <span>Grounded in active course materials</span>
+          <span>{material.units_count > 0 ? "Available for grounded chat" : "No extracted content"}</span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 rounded-full bg-zinc-900 text-white hover:bg-zinc-800 dark:bg-white dark:text-zinc-900 dark:hover:bg-zinc-200 font-semibold transition-all cursor-pointer shadow-xs"

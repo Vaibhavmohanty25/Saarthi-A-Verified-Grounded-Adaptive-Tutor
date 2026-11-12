@@ -109,11 +109,21 @@ def test_powerpoint_upload_populates_the_graph_with_cited_headings(service, monk
     assert legacy.status_code == 415
     assert "PowerPoint Presentation (.pptx)" in legacy.json()["detail"]
 
+    # Older versions could leave unsupported uploads on disk.
+    legacy_filename = "Legacy slides #3.ppt"
+    (service.UPLOAD_DIR / legacy_filename).write_bytes(b"legacy")
     response = client.post("/ingest/upload", files={"file": ("Operating Systems.pptx", deck.getvalue())}, headers=headers)
     assert response.status_code == 200, response.text
     assert response.json()["presentation_concepts_created"] == 2
 
     restarted = TestClient(importlib.reload(service).app)
+    materials = {item["filename"]: item for item in restarted.get("/ingest/materials").json()["materials"]}
+    legacy_material = materials[legacy_filename]
+    assert legacy_material["file_type"] == "ppt"
+    assert legacy_material["units_count"] == 0
+    assert legacy_material["linked_concepts"] == []
+    assert restarted.get(legacy_material["download_url"]).content == b"legacy"
+    assert materials[response.json()["filename"]]["file_type"] == "pptx"
     graph = restarted.get("/graph").json()
     nodes = {node["name"]: node for node in graph["nodes"] if node["topic"] == "Uploaded presentations"}
     assert set(nodes) == {"Critical Section", "Semaphores"}
