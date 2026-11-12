@@ -30,6 +30,8 @@ def chunk_text(
                 chunk = text[start:end]
 
         chunks.append(chunk.strip())
+        if end >= text_length:
+            break
 
         start = max(end - overlap, start + 1)
 

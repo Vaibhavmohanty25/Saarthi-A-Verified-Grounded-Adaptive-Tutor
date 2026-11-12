@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.graph.graph_builder import SYSTEM_A
+from src.ingestion.processing.chunker import chunk_text
 from src.schemas.models import Question, SourceLocation
 
 
@@ -21,6 +22,12 @@ class CourseGraphModel:
                 "concepts": [{"name": name, "definition": name, "aliases": [], "unit_ids": [unit_id]}],
             }
         return {}
+
+
+def test_ingestion_chunker_stops_after_the_final_window():
+    assert chunk_text("Evaporation changes a liquid to vapour.") == ["Evaporation changes a liquid to vapour."]
+    text = "abcdefghijklmnopqrstuvwxyz"
+    assert chunk_text(text, chunk_size=12, overlap=4) == ["abcdefghijkl", "ijklmnopqrst", "qrstuvwxyz"]
 
 
 @pytest.fixture
