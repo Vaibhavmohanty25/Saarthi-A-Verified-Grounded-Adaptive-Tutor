@@ -83,7 +83,7 @@ Saarthi/
 
 ### 1. Clone & Configure Environment
 ```bash
-git clone https://github.com/NansKong/Saarthi-A-Verified-Grounded-Adaptive-Tutor.git
+git clone https://github.com/NansKong/Saarthi-A-Verified-Grounded-Adaptive-Tutor.git Saarthi
 cd Saarthi
 
 # Copy environment template
@@ -106,6 +106,10 @@ API Documentation will be live at: `http://127.0.0.1:8000/docs`
 If startup fails with `API_KEY_INVALID` from the embedding endpoint, check `EMBEDDING_PROVIDER`
 in `.env`. Select `hash` to run retrieval offline or replace the rejected key for the hosted provider.
 Set `LLM_PROVIDER=none` for a demo that also skips hosted text generation.
+In that mode, chat shows matching source excerpts. A short definition question needs a passage
+that contains the full term. The shared `/chat` and `/sessions/{session_id}/chat` endpoints accept
+optional `source_ids` to restrict retrieval to selected materials. Use the stored `filename` from
+`/ingest/materials` as the source ID for an uploaded file.
 
 ### 3. Frontend Setup & Startup (Next.js)
 ```bash
@@ -126,7 +130,7 @@ Open your browser at: `http://localhost:3000`
 
 Run the full automated test suite:
 ```bash
-# Run Pod B retrieval and graph test suites (128 tests)
+# Run the backend tests
 pytest tests/ -v
 
 # Verify Next.js production build and TypeScript contracts

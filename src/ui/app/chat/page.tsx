@@ -56,6 +56,7 @@ interface MessageItem {
   }>;
   status?: "grounded" | "partial" | "refused";
   confidence?: number | null;
+  mode?: string | null;
   claims?: Array<{
     text: string;
     supported: boolean;
@@ -249,6 +250,7 @@ export default function ChatPage() {
         citations: resp.citations || [],
         status: resp.status,
         confidence: resp.confidence,
+        mode: resp.mode,
         claims: resp.claims,
         outside_knowledge: resp.outside_knowledge,
         created_at: new Date().toISOString(),
@@ -312,21 +314,15 @@ export default function ChatPage() {
     }
   };
 
-  const handleUploadSuccess = (unitsInput: ContentUnit | ContentUnit[]) => {
+  const handleUploadSuccess = (units: ContentUnit[], filenames: string[]) => {
     setIsUploadModalOpen(false);
     setSidebarRefresh((prev) => prev + 1);
-
-    const unitsArray = Array.isArray(unitsInput) ? unitsInput : [unitsInput];
-    if (unitsArray.length === 0) return;
-
-    const sourceNames = Array.from(new Set(unitsArray.map((u) => `\`${u.source_id}\``))).join(", ");
-    const isMulti = unitsArray.length > 1;
 
     const tutorNotice: MessageItem = {
       id: `notice_${Date.now()}`,
       role: "assistant",
-      content: `📥 **New Course Material${isMulti ? "s" : ""} Ingested (${unitsArray.length} file${isMulti ? "s" : ""}):** ${sourceNames} ${isMulti ? "have" : "has"} been indexed into the grounded knowledge store. You can now ask questions directly grounded in this material.`,
-      citations: unitsArray.map((u) => ({
+      content: `Indexed ${filenames.length} ${filenames.length === 1 ? "file" : "files"} (${filenames.join(", ")}).`,
+      citations: units.map((u) => ({
         unit_id: u.unit_id,
         source: u.source_id,
         label: u.location.slide
@@ -343,7 +339,6 @@ export default function ChatPage() {
         excerpt: u.text,
         diagram_caption: u.image_caption,
       })),
-      status: "grounded",
       created_at: new Date().toISOString(),
     };
     setMessages((prev) => [...prev, tutorNotice]);
@@ -530,7 +525,7 @@ export default function ChatPage() {
                             </span>
                             {msg.confidence !== undefined && msg.confidence !== null && (
                               <span className="text-[10px] px-2 py-0.2 rounded-full font-semibold bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                                {(msg.confidence * 100).toFixed(0)}% grounded
+                                  {(msg.confidence * 100).toFixed(0)}% {msg.mode === "extractive" ? "retrieval score" : "grounding score"}
                               </span>
                             )}
                           </div>
@@ -666,11 +661,13 @@ export default function ChatPage() {
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-zinc-500 dark:text-zinc-400 font-medium">Confidence</span>
+                        <span className="text-zinc-500 dark:text-zinc-400 font-medium">
+                          {latestAnswerData?.mode === "extractive" ? "Retrieval score" : "Grounding score"}
+                        </span>
                       <span className="font-bold text-zinc-900 dark:text-zinc-100">
-                        {latestAnswerData?.confidence
+                          {typeof latestAnswerData?.confidence === "number"
                           ? `${(latestAnswerData.confidence * 100).toFixed(1)}%`
-                          : "High (Verified)"}
+                            : "Unavailable"}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">

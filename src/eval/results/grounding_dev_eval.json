@@ -10,7 +10,7 @@
       "retrieval_hit@3": 1.0,
       "retrieval_precision@3_strict": 0.47,
       "in_scope_answered": "19/20",
-      "citation_precision": 0.82,
+      "citation_precision": 0.81,
       "answers_with_a_correct_citation": 1.0,
       "off_topic_refusal_rate": 1.0,
       "near_miss_not_confidently_grounded": "4/4"

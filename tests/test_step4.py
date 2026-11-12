@@ -11,7 +11,7 @@ from src.graph.graph import KnowledgeGraph
 from src.retrieval.llm import LLMError
 from src.retrieval.rerank import LexicalReranker
 from src.retrieval.retriever import CONCEPT_BOOST, HybridRetriever
-from src.retrieval.schemas import AnswerStatus
+from src.retrieval.schemas import AnswerStatus, ContentUnit, Location
 from src.retrieval.store import DEFAULT_GRAPH, CorpusStore
 
 from .fakes import ScriptedLLM
@@ -127,6 +127,45 @@ def test_strict_gate_catches_the_generic_word_overlap_case(rg, graph4):
     assert answerer(rg, graph4).answer("best way to learn guitar").status == AnswerStatus.REFUSED  # strict threshold 0.42
 
 
+def test_extractive_definition_rejects_one_word_overlap_and_old_topic():
+    snippets = [
+        ("nlp", "The language model is conditioned on each retrieved passage."),
+        ("other", "A transistor controls an electrical signal."),
+        ("algebra", "The chain rule differentiates a composition of functions."),
+        ("biology", "Cells carry genetic information."),
+    ]
+    store = CorpusStore(ContentUnit(
+        unit_id=name, source_id=name, source_type="pdf", location=Location(page=1), text=text,
+    ) for name, text in snippets)
+    retriever = _retriever(store)
+    query = "What is race condition?"
+    assert retriever.search(query, 1)[0].relevance >= STRICT
+    result = answerer(retriever, None).answer(query, history=[
+        {"role": "user", "content": "What is the chain rule?"},
+    ])
+    assert result.status == AnswerStatus.REFUSED and not result.sources
+    assert result.standalone_question is None
+
+
+def test_extractive_definition_ignores_filename_and_quotes_matching_sentence():
+    wrong = ContentUnit(
+        unit_id="filename", source_id="filename", source_type="pdf", location=Location(page=1),
+        text="Page 1 (Race condition): The language model is conditioned on each retrieved passage.",
+    )
+    right = ContentUnit(
+        unit_id="os", source_id="os", source_type="slides", location=Location(slide=6),
+        text="Slide 6 (Operating Systems): Chapter overview. Review last week's material. "
+             "A race condition occurs when the outcome depends on the timing of concurrent operations.",
+    )
+    a = answerer(_retriever(CorpusStore([wrong, right])), None)
+    result = a.answer("What is a race condition?")
+    assert result.status == AnswerStatus.GROUNDED
+    assert [citation.unit_id for citation in result.sources] == ["os"]
+    assert result.sources[0].excerpt.startswith("A race condition occurs")
+    assert "Chapter overview" not in result.answer
+    assert a.answer("What is a race condition?", source_ids=["filename"]).status == AnswerStatus.REFUSED
+
+
 def test_gate_refuses_before_spending_an_llm_call(rg, graph4):
     llm = ScriptedLLM()  # any call raises AssertionError
     assert answerer(rg, graph4, llm).answer("who won the football world cup").status == AnswerStatus.REFUSED
@@ -180,6 +219,12 @@ def test_llm_fact_check_can_veto_a_lexically_plausible_claim(rg, graph4):
     assert [c.supported for c in r.claims] == [True] and len(r.outside_knowledge) == 1
 
 
+def test_fact_check_needs_an_affirmative_verdict(rg, graph4):
+    llm = ScriptedLLM(answer=good_answer, verify=lambda _: {"verdicts": []})
+    result = answerer(rg, graph4, llm, verify_with_llm=True).answer("what is the chain rule")
+    assert result.status == AnswerStatus.REFUSED and not result.sources
+
+
 def test_near_miss_passes_the_gate_but_the_llm_refuses(rg, graph4):
     llm = ScriptedLLM(answer=lambda p: {"answerable": False, "claims": [], "outside_knowledge": []})
     r = answerer(rg, graph4, llm).answer("what is a convolutional neural network")
@@ -207,6 +252,12 @@ def test_llm_failure_degrades_to_extractive_not_an_error(rg, graph4):
 def test_malformed_llm_answer_degrades_too(rg, graph4):
     r = answerer(rg, graph4, ScriptedLLM(answer=lambda p: ["not", "an", "object"])).answer("what is the chain rule")
     assert r.mode == "extractive"
+
+
+def test_malformed_claims_field_degrades_to_source_excerpts(rg, graph4):
+    llm = ScriptedLLM(answer=lambda _: {"answerable": True, "claims": 1})
+    r = answerer(rg, graph4, llm).answer("what is the chain rule")
+    assert r.mode == "extractive" and r.sources
 
 
 def test_all_claims_unsupported_means_refusal_not_a_confident_answer(rg, graph4):

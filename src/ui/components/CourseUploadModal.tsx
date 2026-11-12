@@ -23,7 +23,7 @@ import { ContentUnit, uploadCourseFiles } from "@/lib/api";
 interface CourseUploadModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onUploadSuccess: (units: ContentUnit[]) => void;
+  onUploadSuccess: (units: ContentUnit[], filenames: string[]) => void;
 }
 
 type FileCategory = "video" | "pdf" | "pptx" | "image" | "document";
@@ -213,7 +213,7 @@ export function CourseUploadModal({
       setPipelineStage(`${res.units_created} units indexed.${conceptStatus}`);
 
       setTimeout(() => {
-        onUploadSuccess(res.sample_units);
+        onUploadSuccess(res.sample_units, res.original_filenames ?? stagedFiles.map((file) => file.name));
         setIsProcessing(false);
         setStagedFiles([]);
         setProgress(0);

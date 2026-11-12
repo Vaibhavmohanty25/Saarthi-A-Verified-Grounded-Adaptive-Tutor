@@ -60,6 +60,7 @@ interface SessionAnswer {
   text: string;
   status: "grounded" | "partial" | "refused";
   confidence: number | null;
+  mode: string | null;
   citations: Citation[];
   claims: { text: string; supported: boolean }[];
   outside_knowledge: string[];
@@ -196,7 +197,12 @@ export async function fetchUploadedMaterials() {
 export function uploadCourseFiles(files: File[]) {
   const body = new FormData();
   for (const file of files) body.append("files", file);
-  return request<{ units_created: number; sample_units: ContentUnit[]; presentation_concepts_created?: number }>(
+  return request<{
+    units_created: number;
+    sample_units: ContentUnit[];
+    original_filenames?: string[];
+    presentation_concepts_created?: number;
+  }>(
     "/ingest/upload", { method: "POST", body },
   );
 }

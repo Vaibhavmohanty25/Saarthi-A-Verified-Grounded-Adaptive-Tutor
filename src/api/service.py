@@ -17,14 +17,15 @@ import sys
 import sqlite3
 import uuid
 import json as json_lib
+from contextlib import closing
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import List, Optional, Dict, Any, Literal
+from typing import Annotated, List, Optional, Dict, Any, Literal
 
 from fastapi import FastAPI, Depends, File, UploadFile, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -151,6 +152,7 @@ def _init_session_db() -> None:
             total INTEGER,
             completed_at TEXT NOT NULL
         );
+        CREATE INDEX IF NOT EXISTS chat_messages_session_time ON chat_messages (session_id, created_at);
     """)
     conn.commit()
     conn.close()
@@ -203,10 +205,14 @@ class ChatMessageIn(BaseModel):
     content: str
 
 
-class ChatRequest(BaseModel):
-    question: str = Field(..., min_length=1, description="Student's query to tutor")
+class TutorQuery(BaseModel):
+    question: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4000)]
+    allow_outside_knowledge: bool = False
+    source_ids: Optional[List[str]] = Field(None, max_length=50, description="Limit retrieval to these sources")
+
+
+class ChatRequest(TutorQuery):
     history: List[ChatMessageIn] = Field(default_factory=list, description="Prior conversational context")
-    allow_outside_knowledge: bool = Field(False, description="Flag outside knowledge if refused")
     student_id: Optional[str] = Field("student_default", description="Active student ID for learner model integration")
 
 
@@ -229,9 +235,7 @@ class SessionCreate(BaseModel):
     title: Optional[str] = None
 
 
-class SessionChatRequest(BaseModel):
-    question: str = Field(..., min_length=1)
-    allow_outside_knowledge: bool = False
+class SessionChatRequest(TutorQuery):
     student_id: str = "student_default"
 
 
@@ -270,27 +274,19 @@ def health():
 # --------------------------------------------------------------------------- #
 # 2. Grounded Tutor Chat (Pod B Grounding + Active LLM)
 # --------------------------------------------------------------------------- #
-@app.post("/chat", tags=["Grounded Tutor"])
-def chat(req: ChatRequest):
-    """
-    Grounded tutor chat with citation chips, diagram evidence, and confidence-gated refusal.
-    Uses Replicate (gpt-4o-mini), Groq (llama-3.3), or Gemini based on configured keys.
-    """
+def _answer_chat(req: TutorQuery, student_id: str, history) -> dict:
     b = rt.bundle
-    student = get_student(req.student_id or "student_default")
+    student = get_student(student_id)
     masteries = student.all_masteries()
 
     # Formulate student context note for tutor pedagogy
     weak_concepts = [c for c, m in masteries.items() if m < 0.5]
     student_ctx = f"Student struggles with: {', '.join(weak_concepts)}" if weak_concepts else "Student in good standing."
 
-    # Convert chat history turns
-    from src.retrieval.api import ChatTurn
-    turns = [ChatTurn(role=m.role, content=m.content) for m in req.history[-10:]]
-
     ans: AnswerResponse = b.answerer.answer(
         question=req.question,
-        history=turns,
+        history=history,
+        source_ids=req.source_ids,
         allow_outside_knowledge=req.allow_outside_knowledge,
         student_context=student_ctx,
     )
@@ -309,23 +305,27 @@ def chat(req: ChatRequest):
                 "timestamp": f"@{int(s.location.t_start)}s" if s.location.t_start is not None else None,
             },
             "excerpt": s.excerpt,
-            "diagram_caption": getattr(s, "image_caption", None),
+            "diagram_caption": unit.image_caption if (unit := b.store.get(s.unit_id)) else None,
         })
 
-    # Display text
-    display_text = ans.answer or ans.message or "I could not find an answer in your uploaded materials."
-    if ans.status == "refused":
-        display_text = ans.message or "This topic is not covered in your uploaded course material."
+    display_text = "\n\n".join(part for part in (ans.message, ans.answer) if part)
 
     return {
-        "status": ans.status.value if hasattr(ans.status, "value") else str(ans.status),
-        "text": display_text,
+        "status": ans.status.value,
+        "text": display_text or "I could not find an answer in your uploaded materials.",
+        "message": ans.message,
         "confidence": ans.confidence,
         "citations": citations,
         "claims": [c.model_dump() for c in ans.claims],
         "outside_knowledge": ans.outside_knowledge,
         "mode": ans.mode,
     }
+
+
+@app.post("/chat", tags=["Grounded Tutor"])
+def chat(req: ChatRequest):
+    """Answer using the shared library or an explicitly selected set of sources."""
+    return _answer_chat(req, req.student_id or "student_default", req.history[-10:])
 
 
 # --------------------------------------------------------------------------- #
@@ -804,7 +804,7 @@ def get_session(session_id: str, student_id: str = "student_default"):
         conn.close()
         raise HTTPException(status_code=404, detail="Session not found")
     messages = conn.execute(
-        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC, rowid ASC",
         (session_id,)
     ).fetchall()
     conn.close()
@@ -853,104 +853,45 @@ def session_chat(session_id: str, req: SessionChatRequest):
     Session-aware grounded tutor chat.
     Persists user + assistant messages to SQLite; auto-titles session from first message.
     """
-    conn = _get_session_db()
-    session = conn.execute("SELECT * FROM chat_sessions WHERE id = ?", (session_id,)).fetchone()
-    if session is not None and session["student_id"] != req.student_id:
-        conn.close()
-        raise HTTPException(404, "Session not found.")
-    if not session:
-        now = datetime.now(timezone.utc).isoformat()
-        auto_title = req.question[:60] + ("..." if len(req.question) > 60 else "")
-        conn.execute(
-            "INSERT INTO chat_sessions (id, student_id, title, created_at, updated_at, message_count) VALUES (?, ?, ?, ?, ?, 0)",
-            (session_id, req.student_id, auto_title, now, now)
-        )
-        conn.commit()
-
-
-    existing = conn.execute(
-        "SELECT role, content FROM chat_messages WHERE session_id = ? ORDER BY created_at ASC",
-        (session_id,)
-    ).fetchall()
-
-    b = rt.bundle
-    student = get_student(req.student_id)
-    masteries = student.all_masteries()
-    weak_concepts = [c for c, m in masteries.items() if m < 0.5]
-    student_ctx = (
-        f"Student struggles with: {', '.join(weak_concepts)}" if weak_concepts else "Student in good standing."
-    )
-
-    history = [{"role": m["role"], "content": m["content"]} for m in existing[-10:]]
-
-    ans: AnswerResponse = b.answerer.answer(
-        question=req.question,
-        history=history,
-        allow_outside_knowledge=req.allow_outside_knowledge,
-        student_context=student_ctx,
-    )
-
-    citations = []
-    for s in ans.sources:
-        citations.append({
-            "unit_id": s.unit_id,
-            "source": s.source_id,
-            "label": s.label,
-            "open_url": s.open_url,
-            "location": {
-                "page": s.location.page,
-                "slide": s.location.slide,
-                "timestamp": f"@{int(s.location.t_start)}s" if s.location.t_start is not None else None,
-            },
-            "excerpt": s.excerpt,
-            "diagram_caption": getattr(s, "image_caption", None),
-        })
-
-    display_text = ans.answer or ans.message or "I could not find an answer in your uploaded materials."
-    if ans.status == "refused":
-        display_text = ans.message or "This topic is not covered in your uploaded course material."
-
+    title = req.question[:60] + ("..." if len(req.question) > 60 else "")
     now = datetime.now(timezone.utc).isoformat()
-    is_first_msg = len(existing) == 0
-
-    conn.execute(
-        "INSERT INTO chat_messages (id, session_id, role, content, citations_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), session_id, "user", req.question, "[]", now)
-    )
-    conn.execute(
-        "INSERT INTO chat_messages (id, session_id, role, content, citations_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), session_id, "assistant", display_text, json_lib.dumps(citations), now)
-    )
-
-    msg_count = conn.execute(
-        "SELECT COUNT(*) FROM chat_messages WHERE session_id = ?", (session_id,)
-    ).fetchone()[0]
-
-    if is_first_msg:
-        auto_title = req.question[:60] + ("..." if len(req.question) > 60 else "")
+    with closing(_get_session_db()) as conn, conn:
         conn.execute(
-            "UPDATE chat_sessions SET title = ?, updated_at = ?, message_count = ? WHERE id = ?",
-            (auto_title, now, msg_count, session_id)
+            """INSERT INTO chat_sessions (id, student_id, title, created_at, updated_at, message_count)
+               VALUES (?, ?, ?, ?, ?, 0) ON CONFLICT (id) DO NOTHING""",
+            (session_id, req.student_id, title, now, now),
         )
-    else:
-        conn.execute(
-            "UPDATE chat_sessions SET updated_at = ?, message_count = ? WHERE id = ?",
-            (now, msg_count, session_id)
+        session = conn.execute(
+            "SELECT id FROM chat_sessions WHERE id = ? AND student_id = ?",
+            (session_id, req.student_id),
+        ).fetchone()
+        if session is None:
+            raise HTTPException(404, "Session not found.")
+        recent = conn.execute(
+            """SELECT role, content FROM chat_messages WHERE session_id = ?
+               ORDER BY created_at DESC, rowid DESC LIMIT 10""",
+            (session_id,),
+        ).fetchall()
+
+    answer = _answer_chat(req, req.student_id, [dict(row) for row in reversed(recent)])
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(_get_session_db()) as conn, conn:
+        updated = conn.execute(
+            """UPDATE chat_sessions SET title = CASE WHEN message_count = 0 THEN ? ELSE title END,
+               updated_at = ?, message_count = message_count + 2 WHERE id = ? AND student_id = ?""",
+            (title, now, session_id, req.student_id),
         )
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "status": ans.status.value if hasattr(ans.status, "value") else str(ans.status),
-        "text": display_text,
-        "confidence": ans.confidence,
-        "citations": citations,
-        "claims": [c.model_dump() for c in ans.claims],
-        "outside_knowledge": ans.outside_knowledge,
-        "mode": ans.mode,
-        "session_id": session_id,
-    }
+        if updated.rowcount == 0:
+            raise HTTPException(404, "Session not found.")
+        conn.executemany(
+            """INSERT INTO chat_messages (id, session_id, role, content, citations_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [
+                (str(uuid.uuid4()), session_id, "user", req.question, "[]", now),
+                (str(uuid.uuid4()), session_id, "assistant", answer["text"], json_lib.dumps(answer["citations"]), now),
+            ],
+        )
+    return {**answer, "session_id": session_id}
 
 
 @app.get("/completed-quizzes", tags=["Assessment"])

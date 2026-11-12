@@ -54,6 +54,39 @@ def _pdf(text):
         return doc.tobytes()
 
 
+def test_shared_chat_refuses_missing_definition_and_preserves_source_scope(service):
+    client = TestClient(service.app)
+    headers = {"X-Admin-Token": "test-admin"}
+
+    def upload(name, text):
+        result = client.post("/ingest/upload", files={"file": (name, text)}, headers=headers)
+        assert result.status_code == 200, result.text
+        return result.json()["filename"]
+
+    nlp = upload("NLP.txt", "The language model is conditioned on the retrieved passages.")
+    session = client.post("/sessions", json={"student_id": "s1"}).json()
+    path = f"/sessions/{session['id']}/chat"
+    request = {"student_id": "s1", "question": "What is a race condition?"}
+    unavailable = client.post(path, json=request).json()
+    assert unavailable["status"] == "refused" and not unavailable["citations"]
+
+    os_material = upload("Operating Systems.txt", "A race condition occurs when the outcome depends on the order of concurrent operations.")
+    answer = client.post(path, json={**request, "source_ids": [os_material]}).json()
+    assert answer["status"] == "grounded" and answer["mode"] == "extractive"
+    assert [citation["source"] for citation in answer["citations"]] == [os_material]
+    assert "Showing matching excerpts" in answer["text"]
+
+    same_question_wrong_source = client.post("/chat", json={**request, "source_ids": [nlp]}).json()
+    assert same_question_wrong_source["status"] == "refused" and not same_question_wrong_source["citations"]
+    assert client.post("/chat", json={"question": "   "}).status_code == 422
+
+    history = client.get(f"/sessions/{session['id']}", params={"student_id": "s1"}).json()
+    assert history["session"]["message_count"] == 4
+    assert [item["role"] for item in history["messages"]] == ["user", "assistant", "user", "assistant"]
+    assert history["messages"][-1]["citations"] == answer["citations"]
+    assert client.post(path, json={**request, "student_id": "s2"}).status_code == 404
+
+
 def test_powerpoint_upload_populates_the_graph_with_cited_headings(service, monkeypatch):
     for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "REPLICATE_API_KEY"):
         monkeypatch.delenv(key, raising=False)
@@ -88,6 +121,12 @@ def test_powerpoint_upload_populates_the_graph_with_cited_headings(service, monk
     assert not nodes["Semaphores"]["prerequisites"]
     assert not nodes["Semaphores"]["assessment_available"]
     assert nodes["Semaphores"]["id"] in graph["integrity"]["topological_order"]
+    answer = restarted.post("/chat", json={
+        "question": "What is a critical section?",
+        "source_ids": [response.json()["filename"]],
+    }).json()
+    assert answer["status"] == "grounded"
+    assert answer["citations"][0]["location"]["slide"] in {2, 4}
 
 
 def _verified_fixture_question(bundle, settings):

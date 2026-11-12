@@ -141,7 +141,9 @@ def _optional_visual_units(extract):
 
 def extract_units(path: Path, title: str) -> list[ContentUnit]:
     suffix = path.suffix.lower()
-    vision_configured = any(os.getenv(key) for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "REPLICATE_API_KEY"))
+    vision_configured = os.getenv("LLM_PROVIDER", "").strip().lower() != "none" and any(
+        os.getenv(key) for key in ("GEMINI_API_KEY", "GOOGLE_API_KEY", "REPLICATE_API_KEY", "REPLICATE_API_TOKEN")
+    )
     if suffix == ".pdf":
         from src.ingestion.ingestion.pdf_parser import extract_pdf_content
 

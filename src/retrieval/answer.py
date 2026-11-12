@@ -74,11 +74,42 @@ brief briefly upload uploaded uploads ppt pptx pdf presentation document doc fil
 rule rules law laws theory theories aspect aspects part parts point points time era role
 summarize summary overview main concept concepts core topics topic detail details discuss review intro introduction outline cover covered chapter unit""".split())
 
+_DEFINITION = re.compile(r"^(?:what\s+(?:is|are)\s+|define\s+)(?:(?:a|an|the)\s+)?([^?!.\n]+)[?!.]*$", re.I)
+_FOLLOW_UP = re.compile(
+    r"^(?:and|also|what about|how about|tell me more)\b|\b(?:it|its|they|their|this|that|these|those|former|latter)\b",
+    re.I,
+)
 
 
-def _sentences(text: str, n: int = 2, max_chars: int = 260) -> str:
+def _definition_topic(question: str) -> str:
+    match = _DEFINITION.fullmatch(question.strip())
+    if not match or not 2 <= len(tokenize(match[1])) <= 5:
+        return ""
+    return " ".join(tokenize(match[1], keep_stopwords=True))
+
+
+def _contains_topic(text: str, topic: str) -> bool:
+    tokens = " ".join(tokenize(text, keep_stopwords=True))
+    return f" {topic} " in f" {tokens} "
+
+
+def _supports_definition(text: str, topic: str) -> bool:
+    return _contains_topic(text, topic) and bool(set(tokenize(text)) - set(tokenize(topic)))
+
+
+def _evidence_text(unit: ContentUnit) -> str:
+    text = unit.text
+    prefix = unit.location.label()
+    legacy_page = f"Page {unit.location.page} (" if unit.location.page is not None else f"{prefix} ("
+    if text.startswith((f"{prefix} (", legacy_page)) and "): " in text:
+        text = text.split("): ", 1)[1]
+    return f"{text}\n{unit.image_caption}" if unit.image_caption else text
+
+
+def _sentences(text: str, topic: str = "", n: int = 2, max_chars: int = 260) -> str:
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
-    out = " ".join(parts[:n])
+    start = next((i for i, part in enumerate(parts) if topic and _contains_topic(part, topic)), 0)
+    out = " ".join(parts[start : start + n])
     return out if len(out) <= max_chars else out[: max_chars - 3].rstrip() + "..."
 
 
@@ -141,11 +172,11 @@ class GroundedAnswerer:
         if self.llm is not None:
             try:
                 return self._generate(base, standalone, hits, allow_outside_knowledge, student_context, flagged)
-            except (LLMError, RuntimeError) as e:  # network/quota/format failure: degrade, don't crash
+            except (LLMError, RuntimeError):  # network/quota/format failure: degrade, don't crash
                 resp = self._extractive(base, hits, top, thr=self.t_strict, strength=strength, flagged=flagged,
                                         question=standalone)
                 if resp.status != AnswerStatus.REFUSED:  # keep the refusal text intact
-                    resp.message = f"The language model was unavailable ({str(e)[:120]}); showing source excerpts instead."
+                    resp.message = "The language model was unavailable. Showing matching source excerpts."
                     if flagged:
                         resp.message += " " + self._flag_message(flagged, standalone)
                 return resp
@@ -180,7 +211,7 @@ class GroundedAnswerer:
                 f"What follows is about the related material{f' ({near})' if near else ''} and may not answer your question.")
 
     def _standalone(self, question: str, history: list) -> str:
-        if not history:
+        if not history or not _FOLLOW_UP.search(question):
             return question
         turns = []
         for m in history[-6:]:
@@ -229,9 +260,18 @@ class GroundedAnswerer:
                     flagged: Optional[list[str]] = None, question: str = "") -> AnswerResponse:
         if top < thr and strength < 1.0:  # strict gate (no LLM to catch a bad pass)
             return self._refuse(base, base["question"], False)
-        chosen = [h for h in hits if h.relevance >= min(thr, top)][:3] or hits[:1]
-        claims = [Claim(text=_sentences(h.unit.text), citations=[make_citation(h.unit)]) for h in chosen]
-        msg = "No language model configured: showing the most relevant excerpts from your material."
+        topic = _definition_topic(question or base["question"]) if not flagged else ""
+        if topic:
+            chosen = [h for h in hits if _supports_definition(_evidence_text(h.unit), topic)][:1]
+        else:
+            chosen = [h for h in hits if h.relevance > 0 and h.relevance >= min(thr, top)][:3]
+        if not chosen:
+            return self._refuse(base, base["question"], False)
+        claims = []
+        for hit in chosen:
+            excerpt = _sentences(_evidence_text(hit.unit), topic)
+            claims.append(Claim(text=excerpt, citations=[make_citation(hit.unit, excerpt=excerpt)]))
+        msg = "Showing matching excerpts from your course material."
         if flagged:  # a near-miss: real excerpts, but they probably don't answer what was asked
             return self._compose(base, claims, [], AnswerStatus.PARTIAL, mode="extractive", confidence=round(top, 3),
                                  message=self._flag_message(flagged, question or base["question"]))
@@ -248,12 +288,21 @@ class GroundedAnswerer:
             question=q, context=ctx, coverage_note=note, excerpts="\n".join(_fmt_excerpt(h.unit) for h in hits)))
         if not isinstance(raw, dict):
             raise LLMError("answer was not a JSON object")
+        if raw.get("answerable") is False:
+            return self._refuse(base, q, allow_outside)
+        raw_claims = raw.get("claims")
+        if not isinstance(raw_claims, list):
+            raise LLMError("answer did not include a claims list")
         proposed = []
-        for c in raw.get("claims") or []:
+        for c in raw_claims:
             if isinstance(c, dict) and str(c.get("text", "")).strip():
-                ids = [i for i in (c.get("unit_ids") or []) if isinstance(i, str) and i in by_id]  # drop invented ids
+                unit_ids = c.get("unit_ids")
+                ids = [i for i in unit_ids if isinstance(i, str) and i in by_id] if isinstance(unit_ids, list) else []
                 proposed.append((str(c["text"]).strip(), list(dict.fromkeys(ids))))
-        outside = [str(x).strip() for x in (raw.get("outside_knowledge") or []) if str(x).strip()][:2]
+        raw_outside = raw.get("outside_knowledge")
+        outside = [x.strip() for x in raw_outside if isinstance(x, str) and x.strip()][:2] if (
+            allow_outside and isinstance(raw_outside, list)
+        ) else []
 
         verdicts = self._verify(proposed, by_id)
         claims: list[Claim] = []
@@ -263,7 +312,7 @@ class GroundedAnswerer:
             else:  # unsupported => flagged, never presented as source-backed
                 claims.append(Claim(text=text, citations=[], supported=False))
         supported = [c for c in claims if c.supported]
-        if raw.get("answerable") is False or not supported:
+        if not supported:
             return self._refuse(base, q, allow_outside)
         unsupported = [c.text for c in claims if not c.supported]
         status = AnswerStatus.GROUNDED if not unsupported and not outside and not flagged else AnswerStatus.PARTIAL
@@ -290,12 +339,15 @@ class GroundedAnswerer:
         if self.verify_with_llm and self.llm is not None and any(out):
             items = "\n\n".join(f"Claim {n}: {t}\nCited excerpts:\n" + "\n".join(_fmt_excerpt(by_id[i]) for i in ids)
                                 for n, (t, ids) in enumerate(proposed) if out[n])
-            try:
-                v = self.llm.generate_json(SYSTEM_VERIFY, PROMPT_VERIFY.format(items=items)).get("verdicts") or []
-                bad = {int(x["i"]) for x in v if isinstance(x, dict) and x.get("supported") is False and "i" in x}
-                out = [ok and n not in bad for n, ok in enumerate(out)]
-            except (LLMError, RuntimeError, AttributeError, ValueError):
-                pass  # lexical check already applied
+            verdict = self.llm.generate_json(SYSTEM_VERIFY, PROMPT_VERIFY.format(items=items))
+            entries = verdict.get("verdicts") if isinstance(verdict, dict) else None
+            if not isinstance(entries, list):
+                raise LLMError("Invalid claim verification response")
+            confirmed = {item["i"] for item in entries if isinstance(item, dict)
+                         and type(item.get("i")) is int and item.get("supported") is True}
+            rejected = {item["i"] for item in entries if isinstance(item, dict)
+                        and type(item.get("i")) is int and item.get("supported") is False}
+            out = [ok and n in confirmed and n not in rejected for n, ok in enumerate(out)]
         return out
 
     def info(self) -> dict:
