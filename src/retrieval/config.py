@@ -1,9 +1,8 @@
 """Settings. Everything is driven by environment variables (optionally a .env file),
 so adding an API key later is a one-line change and needs no code edits.
 
-See .env.example. Provider choice defaults to "auto":
-    key present  -> use that provider's hosted model
-    no key       -> local sentence-transformers if installed, else a built-in hashing fallback
+See .env.example. Retrieval defaults to hashing and lexical reranking, which
+run locally. Set EMBEDDING_PROVIDER=auto to opt in to key-based selection.
 """
 from __future__ import annotations
 
@@ -30,6 +29,13 @@ def _get(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _api_key(name: str) -> str:
+    value = _get(name)
+    if value.lower() == f"your_{name.lower()}_here":
+        return ""
+    return value
+
+
 @dataclass(frozen=True)
 class Settings:
     embedding_provider: str  # auto | openai | gemini | local | hash
@@ -54,12 +60,12 @@ class Settings:
     def from_env(cls) -> "Settings":
         load_dotenv()
         return cls(
-            embedding_provider=_get("EMBEDDING_PROVIDER", "auto").lower(),
+            embedding_provider=(_get("EMBEDDING_PROVIDER") or "hash").lower(),
             embedding_model=_get("EMBEDDING_MODEL"),
-            rerank_provider=_get("RERANK_PROVIDER", "auto").lower(),
+            rerank_provider=(_get("RERANK_PROVIDER") or "lexical").lower(),
             rerank_model=_get("RERANK_MODEL"),
-            openai_api_key=_get("OPENAI_API_KEY"),
-            gemini_api_key=_get("GEMINI_API_KEY") or _get("GOOGLE_API_KEY"),
+            openai_api_key=_api_key("OPENAI_API_KEY"),
+            gemini_api_key=_api_key("GEMINI_API_KEY") or _api_key("GOOGLE_API_KEY"),
             cache_dir=Path(_get("POD_B_CACHE_DIR", ".pod_b_cache")),
             candidate_pool=int(_get("CANDIDATE_POOL", "20")),
             llm_provider=_get("LLM_PROVIDER", "auto").lower(),
@@ -69,6 +75,6 @@ class Settings:
             rate_limit_per_min=int(_get("POD_B_RATE_LIMIT", "60")),
             cors_origins=_get("POD_B_CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"),
             sources_dir=_get("POD_B_SOURCES_DIR"),
-            replicate_api_key=_get("REPLICATE_API_KEY") or _get("REPLICATE_API_TOKEN"),
-            groq_api_key=_get("GROQ_API_KEY"),
+            replicate_api_key=_api_key("REPLICATE_API_KEY") or _api_key("REPLICATE_API_TOKEN"),
+            groq_api_key=_api_key("GROQ_API_KEY"),
         )

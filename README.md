@@ -89,12 +89,9 @@ cd Saarthi
 # Copy environment template
 cp .env.example .env
 ```
-Edit `.env` and set your API keys:
-```env
-GROQ_API_KEY=your_groq_api_key_here
-GEMINI_API_KEY=your_gemini_api_key_here
-REPLICATE_API_KEY=your_replicate_api_key_here
-```
+The demo starts with local hashing and lexical reranking. Add API keys in `.env` when you want
+provider-backed generation or course builds. To use Gemini embeddings, set `EMBEDDING_PROVIDER=gemini`
+and provide a valid `GEMINI_API_KEY`. You can also choose `auto` for key-based provider selection.
 
 ### 2. Backend Setup & Startup (FastAPI)
 ```bash
@@ -105,6 +102,10 @@ pip install -r requirements.txt
 python -m uvicorn src.api.service:app --host 0.0.0.0 --port 8000 --reload
 ```
 API Documentation will be live at: `http://127.0.0.1:8000/docs`
+
+If startup fails with `API_KEY_INVALID` from the embedding endpoint, check `EMBEDDING_PROVIDER`
+in `.env`. Select `hash` to run retrieval offline or replace the rejected key for the hosted provider.
+Set `LLM_PROVIDER=none` for a demo that also skips hosted text generation.
 
 ### 3. Frontend Setup & Startup (Next.js)
 ```bash

@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.retrieval.api import create_app
 from src.retrieval.bm25 import BM25
+from src.retrieval.config import Settings
 from src.retrieval.embeddings import (CachedEmbedder, ConfigError, EmbeddingCache, GeminiEmbedder,
                               HashingEmbedder, OpenAIEmbedder, make_embedder)
 from src.retrieval.golden import LEXICAL, OFF_MATERIAL, SEMANTIC, evaluate
@@ -88,6 +89,21 @@ def test_results_sorted_by_relevance(retriever):
 
 
 # ---- provider selection (no network) ---------------------------------------
+def test_default_retrieval_starts_without_using_configured_cloud_key(store, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("EMBEDDING_PROVIDER", raising=False)
+    monkeypatch.delenv("RERANK_PROVIDER", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "rejected-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "your_openai_api_key_here")
+    monkeypatch.setenv("REPLICATE_API_KEY", "your_replicate_api_key_here")
+    monkeypatch.delenv("REPLICATE_API_TOKEN", raising=False)
+    settings = Settings.from_env()
+    assert settings.gemini_api_key == "rejected-key"
+    assert not settings.openai_api_key and not settings.replicate_api_key
+    app = create_app(store=store, settings=settings, persist=False)
+    assert app.state.runtime.bundle.retriever.backend_key() == "hash:512|lexical"
+
+
 def test_auto_picks_openai_then_gemini_then_fallback():
     assert make_embedder(make_settings(openai_api_key="sk-x"))[0].name.startswith("openai:")
     assert make_embedder(make_settings(gemini_api_key="g-x"))[0].name.startswith("gemini:")
