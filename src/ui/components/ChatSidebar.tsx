@@ -106,13 +106,18 @@ export function ChatSidebar({
   /* ─── Data loading ─── */
   const loadData = useCallback(async () => {
     setLoadingSessions(true);
-    const [s, q] = await Promise.all([
-      listSessions(studentId),
-      fetchCompletedQuizzes(studentId),
-    ]);
-    setSessions(s);
-    setCompletedQuizzes(q);
-    setLoadingSessions(false);
+    try {
+      const [s, q] = await Promise.all([
+        listSessions(studentId),
+        fetchCompletedQuizzes(studentId),
+      ]);
+      setSessions(s);
+      setCompletedQuizzes(q);
+    } catch (error) {
+      console.warn("Could not load the chat sidebar:", error);
+    } finally {
+      setLoadingSessions(false);
+    }
   }, [studentId]);
 
   useEffect(() => {
@@ -145,9 +150,14 @@ export function ChatSidebar({
   const handleDelete = async (e: React.MouseEvent, id: string) => {
     e.stopPropagation();
     setDeletingId(id);
-    await deleteSession(id);
-    setSessions((prev) => prev.filter((s) => s.id !== id));
-    setDeletingId(null);
+    try {
+      await deleteSession(id, studentId);
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+    } catch (error) {
+      console.warn("Could not delete the chat session:", error);
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const groups = groupSessions(sessions);

@@ -209,24 +209,8 @@ export function CourseUploadModal({
         `Ingestion Complete: ${res.units_created || stagedFiles.length} units indexed!`
       );
 
-      const createdUnits: ContentUnit[] = stagedFiles.map((file, idx) => {
-        const cat = getFileCategory(file);
-        const sampleMatch = res.sample_units?.find((s) => s.source_id === file.name);
-        const resolvedSourceType: "video" | "pdf" | "slides" =
-          cat === "video" ? "video" : cat === "pdf" ? "pdf" : "slides";
-        return {
-          unit_id: sampleMatch?.unit_id || `cu_${Date.now().toString().slice(-4)}_${idx}`,
-          source_id: file.name,
-          source_type: resolvedSourceType,
-          location: cat === "video" ? { timestamp: "00:45" } : { slide: 1, page: 1 },
-          text: sampleMatch?.text || `Extracted and indexed chunks from ${file.name}`,
-          image_caption: cat === "image" ? `Annotated visual diagram from ${file.name}` : undefined,
-          topic_ids: ["topic_custom"],
-        };
-      });
-
       setTimeout(() => {
-        onUploadSuccess(createdUnits);
+        onUploadSuccess(res.sample_units);
         setIsProcessing(false);
         setStagedFiles([]);
         setProgress(0);
@@ -235,31 +219,10 @@ export function CourseUploadModal({
     } catch (err) {
       clearTimeout(timer1);
       clearTimeout(timer2);
-      console.warn("Backend upload error, using local fallback:", err);
-      setProgress(100);
-      setPipelineStage("Ingestion Complete: Ready for Grounded Reasoning!");
-
-      const fallbackUnits: ContentUnit[] = stagedFiles.map((file, idx) => {
-        const cat = getFileCategory(file);
-        const resolvedSourceType: "video" | "pdf" | "slides" =
-          cat === "video" ? "video" : cat === "pdf" ? "pdf" : "slides";
-        return {
-          unit_id: `cu_${Date.now().toString().slice(-4)}_${idx}`,
-          source_id: file.name,
-          source_type: resolvedSourceType,
-          location: cat === "video" ? { timestamp: "00:45" } : { slide: 1, page: 1 },
-          text: `Uploaded course material: ${file.name}. Indexed for reasoning.`,
-          topic_ids: ["topic_custom"],
-        };
-      });
-
-      setTimeout(() => {
-        onUploadSuccess(fallbackUnits);
-        setIsProcessing(false);
-        setStagedFiles([]);
-        setProgress(0);
-        onClose();
-      }, 700);
+      setErrorNotice(err instanceof Error ? err.message : "Course upload failed.");
+      setIsProcessing(false);
+      setProgress(0);
+      setPipelineStage("");
     }
   };
 

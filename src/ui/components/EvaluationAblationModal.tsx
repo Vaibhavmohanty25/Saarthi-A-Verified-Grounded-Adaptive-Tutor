@@ -2,6 +2,7 @@
 
 import React from "react";
 import { X, TrendingUp, BarChart3, CheckCircle, ShieldAlert, Award, Sparkles } from "lucide-react";
+import { formatMetric } from "@/lib/api";
 import { EVALUATION_ABLATION_DATA } from "@/lib/mockData";
 
 interface EvaluationAblationModalProps {
@@ -131,7 +132,7 @@ export function EvaluationAblationModal({
               <div className="p-3 rounded-lg bg-white dark:bg-white/[0.02] border border-zinc-200/80 dark:border-white/[0.06]">
                 <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase block">Faithfulness</span>
                 <span className="text-base font-extrabold text-zinc-900 dark:text-white">
-                  {(ragas_metrics.faithfulness * 100).toFixed(1)}%
+                  {formatMetric(ragas_metrics.faithfulness)}
                 </span>
                 <span className="text-xs text-emerald-600 dark:text-emerald-400 block mt-0.5 font-medium">Grounding pass</span>
               </div>
@@ -139,7 +140,7 @@ export function EvaluationAblationModal({
               <div className="p-3 rounded-lg bg-white dark:bg-white/[0.02] border border-zinc-200/80 dark:border-white/[0.06]">
                 <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase block">Answer Relevancy</span>
                 <span className="text-base font-extrabold text-zinc-900 dark:text-white">
-                  {(ragas_metrics.answer_relevancy * 100).toFixed(1)}%
+                  {formatMetric(ragas_metrics.answer_relevancy)}
                 </span>
                 <span className="text-xs text-emerald-600 dark:text-emerald-400 block mt-0.5 font-medium">High precision</span>
               </div>
@@ -147,7 +148,7 @@ export function EvaluationAblationModal({
               <div className="p-3 rounded-lg bg-white dark:bg-white/[0.02] border border-zinc-200/80 dark:border-white/[0.06]">
                 <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase block">Context Precision</span>
                 <span className="text-base font-extrabold text-zinc-900 dark:text-white">
-                  {(ragas_metrics.context_precision * 100).toFixed(1)}%
+                  {formatMetric(ragas_metrics.context_precision)}
                 </span>
                 <span className="text-xs text-indigo-600 dark:text-indigo-400 block mt-0.5 font-medium">Top-3 reranked</span>
               </div>
@@ -155,7 +156,7 @@ export function EvaluationAblationModal({
               <div className="p-3 rounded-lg bg-white dark:bg-white/[0.02] border border-zinc-200/80 dark:border-white/[0.06]">
                 <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase block">Context Recall</span>
                 <span className="text-base font-extrabold text-zinc-900 dark:text-white">
-                  {(ragas_metrics.context_recall * 100).toFixed(1)}%
+                  {formatMetric(ragas_metrics.context_recall)}
                 </span>
                 <span className="text-xs text-indigo-600 dark:text-indigo-400 block mt-0.5 font-medium">Full coverage</span>
               </div>
@@ -163,7 +164,7 @@ export function EvaluationAblationModal({
               <div className="p-3 rounded-lg bg-white dark:bg-white/[0.02] border border-zinc-200/80 dark:border-white/[0.06] col-span-2 sm:col-span-1">
                 <span className="text-xs font-bold text-zinc-500 dark:text-zinc-400 uppercase block">Refusal Precision</span>
                 <span className="text-base font-extrabold text-emerald-600 dark:text-emerald-400">
-                  {(ragas_metrics.refusal_precision * 100).toFixed(1)}%
+                  {formatMetric(ragas_metrics.refusal_precision)}
                 </span>
                 <span className="text-xs text-emerald-600 dark:text-emerald-400 block mt-0.5 font-medium">Zero hallucination</span>
               </div>

@@ -21,7 +21,7 @@ import {
   BarChart3,
   ExternalLink,
 } from "lucide-react";
-import { MOCK_CONCEPTS, MOCK_QUESTIONS, INITIAL_CHAT_MESSAGES, ChatMessage } from "@/lib/mockData";
+import { MOCK_CONCEPTS, type ChatMessage } from "@/lib/mockData";
 
 export default function LandingPage() {
   const [activeCitation, setActiveCitation] = useState<any | null>(null);

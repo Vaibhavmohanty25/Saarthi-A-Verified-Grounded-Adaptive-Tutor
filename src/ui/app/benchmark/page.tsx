@@ -15,7 +15,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import { EVALUATION_ABLATION_DATA } from "@/lib/mockData";
-import { fetchAblationBenchmarks, fetchRagasMetrics } from "@/lib/api";
+import { fetchAblationBenchmarks, fetchRagasMetrics, formatMetric } from "@/lib/api";
 
 export default function BenchmarkPage() {
   const [data, setData] = React.useState(EVALUATION_ABLATION_DATA);
@@ -109,7 +109,7 @@ export default function BenchmarkPage() {
               RAGAS Faithfulness
             </span>
             <div className="text-3xl font-extrabold text-indigo-600 dark:text-indigo-400 mt-1">
-              {(ragas_metrics.faithfulness * 100).toFixed(1)}%
+              {formatMetric(ragas_metrics.faithfulness)}
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
               Zero unsupported claims across verified course test queries
@@ -121,7 +121,7 @@ export default function BenchmarkPage() {
               Grounding Refusal Accuracy
             </span>
             <div className="text-3xl font-extrabold text-teal-600 dark:text-teal-400 mt-1">
-              {(ragas_metrics.refusal_accuracy * 100).toFixed(1)}%
+              {formatMetric(ragas_metrics.refusal_accuracy)}
             </div>
             <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
               Out-of-scope traps correctly refused without hallucination
@@ -204,7 +204,7 @@ export default function BenchmarkPage() {
                 Faithfulness
               </span>
               <div className="text-2xl font-extrabold text-zinc-900 dark:text-white mt-1">
-                {(ragas_metrics.faithfulness * 100).toFixed(1)}%
+                {formatMetric(ragas_metrics.faithfulness)}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                 Zero claim hallucinations
@@ -216,7 +216,7 @@ export default function BenchmarkPage() {
                 Answer Relevancy
               </span>
               <div className="text-2xl font-extrabold text-zinc-900 dark:text-white mt-1">
-                {(ragas_metrics.answer_relevancy * 100).toFixed(1)}%
+                {formatMetric(ragas_metrics.answer_relevancy)}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                 Direct question satisfaction
@@ -228,7 +228,7 @@ export default function BenchmarkPage() {
                 Context Precision
               </span>
               <div className="text-2xl font-extrabold text-zinc-900 dark:text-white mt-1">
-                {(ragas_metrics.context_precision * 100).toFixed(1)}%
+                {formatMetric(ragas_metrics.context_precision)}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                 Relevant chunks ranked top
@@ -240,7 +240,7 @@ export default function BenchmarkPage() {
                 Context Recall
               </span>
               <div className="text-2xl font-extrabold text-zinc-900 dark:text-white mt-1">
-                {(ragas_metrics.context_recall * 100).toFixed(1)}%
+                {formatMetric(ragas_metrics.context_recall)}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                 All syllabus truths retrieved
@@ -252,7 +252,7 @@ export default function BenchmarkPage() {
                 Verifier Agreement
               </span>
               <div className="text-2xl font-extrabold text-zinc-900 dark:text-white mt-1">
-                {((ragas_metrics.verifier_agreement || 0.94) * 100).toFixed(1)}%
+                {formatMetric(ragas_metrics.verifier_agreement)}
               </div>
               <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                 Dual LLM consensus rate

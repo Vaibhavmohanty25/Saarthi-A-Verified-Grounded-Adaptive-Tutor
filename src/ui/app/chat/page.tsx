@@ -331,12 +331,14 @@ export default function ChatPage() {
         source: u.source_id,
         label: u.location.slide
           ? `Slide ${u.location.slide}`
-          : u.location.timestamp || `Page ${u.location.page || 1}`,
+          : u.location.timestamp != null ? String(u.location.timestamp) : `Page ${u.location.page ?? 1}`,
         open_url: "#",
         location: {
           page: u.location.page,
           slide: u.location.slide,
-          timestamp: u.location.timestamp,
+          timestamp: typeof u.location.timestamp === "number"
+            ? `@${u.location.timestamp}s`
+            : u.location.timestamp,
         },
         excerpt: u.text,
         diagram_caption: u.image_caption,

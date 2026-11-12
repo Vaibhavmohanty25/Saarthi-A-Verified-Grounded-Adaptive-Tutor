@@ -85,11 +85,11 @@ export function MediaPreviewModal({
   const catInfo = getCategoryInfo(material.file_type);
   const CatIcon = catInfo.icon;
 
-  const handleSeekVideo = (timestampStr?: string, seconds?: number) => {
+  const handleSeekVideo = (timestamp?: string | number | null, seconds?: number | null) => {
     if (!videoRef.current) return;
-    let target = seconds;
-    if (target === undefined && timestampStr) {
-      const clean = timestampStr.replace("@", "").replace(/s$/i, "").trim();
+    let target = seconds ?? (typeof timestamp === "number" ? timestamp : undefined);
+    if (target === undefined && typeof timestamp === "string") {
+      const clean = timestamp.replace("@", "").replace(/s$/i, "").trim();
       const parts = clean.split(":").map(Number);
       if (parts.length === 3 && !parts.some(isNaN)) {
         target = parts[0] * 3600 + parts[1] * 60 + parts[2];

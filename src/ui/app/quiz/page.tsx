@@ -23,7 +23,18 @@ import {
   triggerDiagnostic,
   fetchStudentMastery,
   fetchKnowledgeGraph,
+  type QuizQuestion,
 } from "@/lib/api";
+
+function toQuizQuestion(question: QuizQuestion): Question {
+  return {
+    ...question,
+    options: question.options ?? [],
+    answer: "",
+    explanation: "",
+    sympy_verified: false,
+  };
+}
 
 export default function QuizPage() {
   const [concepts, setConcepts] = useState<ConceptNode[]>(MOCK_CONCEPTS);
@@ -69,21 +80,7 @@ export default function QuizPage() {
         }
 
         if (quizRes.questions && quizRes.questions.length > 0) {
-          const formatted: Question[] = quizRes.questions.map((q) => ({
-            q_id: q.q_id,
-            concept_id: q.concept_id,
-            topic: q.topic,
-            source_location: q.source_location,
-            difficulty: q.difficulty,
-            type: q.type,
-            stem: q.stem,
-            options: q.options || [],
-            answer: "",
-            explanation: `Verified feedback grounded in course material (${q.topic}).`,
-            verified: q.verified,
-            verifier_agreement: q.verifier_agreement || 1.0,
-            sympy_verified: q.type === "numeric",
-          }));
+          const formatted: Question[] = quizRes.questions.map(toQuizQuestion);
           setQuestions(formatted);
           setCurrentQuestionIndex(0);
         }
@@ -106,21 +103,7 @@ export default function QuizPage() {
         selectedConceptFilter || undefined
       );
       if (quizRes.questions && quizRes.questions.length > 0) {
-        const formatted: Question[] = quizRes.questions.map((q) => ({
-          q_id: q.q_id,
-          concept_id: q.concept_id,
-          topic: q.topic,
-          source_location: q.source_location,
-          difficulty: q.difficulty,
-          type: q.type,
-          stem: q.stem,
-          options: q.options || [],
-          answer: "",
-          explanation: `Verified feedback grounded in course material (${q.topic}).`,
-          verified: q.verified,
-          verifier_agreement: q.verifier_agreement || 1.0,
-          sympy_verified: q.type === "numeric",
-        }));
+        const formatted: Question[] = quizRes.questions.map(toQuizQuestion);
         setQuestions(formatted);
         setCurrentQuestionIndex(0);
       }
@@ -136,7 +119,8 @@ export default function QuizPage() {
       const res = await submitStudentAnswer(
         "s1",
         activeQuestion.q_id,
-        chosenOption
+        chosenOption,
+        activeQuestion.attempt_id
       );
       setNextRecommendation(`Next recommended concept: ${res.next_concept} (Difficulty ${res.next_difficulty})`);
 
@@ -163,8 +147,8 @@ export default function QuizPage() {
     } catch (err) {
       console.warn("Submission error:", err);
       return {
-        correct: chosenOption.startsWith(activeQuestion.answer.slice(0, 2)),
-        explanation: activeQuestion.explanation,
+        correct: Boolean(activeQuestion.answer) && chosenOption.trim().toLowerCase() === activeQuestion.answer.trim().toLowerCase(),
+        explanation: activeQuestion.explanation || "The grading service is unavailable. Try again when the backend is running.",
         correct_answer: activeQuestion.answer,
       };
     }
@@ -181,6 +165,11 @@ export default function QuizPage() {
   const handleRunDiagnostic = async () => {
     try {
       const res = await triggerDiagnostic("s1");
+      if (res.questions?.length) {
+        setQuestions(res.questions.map(toQuizQuestion));
+        setCurrentQuestionIndex(0);
+        setNextRecommendation(null);
+      }
       if (res.masteries) {
         setConcepts((prev) =>
           prev.map((c) => {

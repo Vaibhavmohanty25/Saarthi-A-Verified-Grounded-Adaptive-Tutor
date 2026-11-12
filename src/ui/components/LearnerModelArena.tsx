@@ -50,7 +50,7 @@ export function LearnerModelArena({
     setIsCorrect(false);
     setShowExplanation(false);
     setFeedback(null);
-  }, [activeQuestion.q_id]);
+  }, [activeQuestion.q_id, activeQuestion.attempt_id]);
 
   // Compute overall BKT mastery
   const totalMastery = concepts.length > 0
